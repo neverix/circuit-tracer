@@ -12,6 +12,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
 from circuit_tracer.attribution.context_transformerlens import AttributionContext
+from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig, parse_mlp_string
 from circuit_tracer.transcoder import TranscoderSet, CrossLayerTranscoder, MLPDummyTranscoder, MLPDummyTranscoderSet
 from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
@@ -76,7 +77,7 @@ class TransformerLensReplacementModel(HookedTransformer):
     def from_config(
         cls,
         config: HookedTransformerConfig,
-        transcoders: TranscoderSet | CrossLayerTranscoder | Literal['mlp'],  # Accept both
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig | str,  # Accept both
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from a given HookedTransformerConfig and TranscoderSet
@@ -88,6 +89,10 @@ class TransformerLensReplacementModel(HookedTransformer):
         Returns:
             TransformerLensReplacementModel: The loaded TransformerLensReplacementModel
         """
+        # if someone inputs "mlp-[threshold]"
+        if isinstance(transcoders, str):
+            transcoders = parse_mlp_string(transcoders)
+
         model = cls(config, **kwargs)
         model._configure_replacement_model(transcoders)
         return model
@@ -96,7 +101,7 @@ class TransformerLensReplacementModel(HookedTransformer):
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder | Literal['mlp'],
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
         **kwargs,
@@ -159,10 +164,12 @@ class TransformerLensReplacementModel(HookedTransformer):
         if device is None:
             device = get_default_device()
 
-        (
-            transcoders,
-            _,
-        ) = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)  # type: ignore
+        if transcoder_set.startswith('mlp'):
+            transcoders = parse_mlp_string(transcoder_set)
+        else:
+            transcoders, _ = load_transcoder_from_hub(transcoder_set, 
+                                                      device=device, 
+                                                      dtype=dtype)  # type: ignore
 
         return cls.from_pretrained_and_transcoders(
             model_name,
@@ -172,7 +179,7 @@ class TransformerLensReplacementModel(HookedTransformer):
             **kwargs,
         )
 
-    def create_dummy_mlp_transcoders(self) -> MLPDummyTranscoderSet:
+    def create_dummy_mlp_transcoders(self, activation_threshold) -> MLPDummyTranscoderSet:
         transcoders = {}
         for layer in range(self.cfg.n_layers):
             mlp: nn.Module = self.blocks[layer].mlp  # type: ignore
@@ -190,17 +197,17 @@ class TransformerLensReplacementModel(HookedTransformer):
                 act_fn = GatedActivationFunction(W_gate, mlp.act_fn)
             else:
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
-            transcoders[layer] = MLPDummyTranscoder(W_enc, b_enc, W_dec, b_dec, act_fn, layer)
+            transcoders[layer] = MLPDummyTranscoder(W_enc, b_enc, W_dec, b_dec, act_fn, layer, activation_threshold)
 
         return MLPDummyTranscoderSet(transcoders,
                                      feature_input_hook='mlp.hook_in',
                                      feature_output_hook='mlp.hook_out',
                                      scan='mlp')
 
-    def _configure_replacement_model(self, transcoder_set: TranscoderSet | CrossLayerTranscoder | Literal['mlp']):
+    def _configure_replacement_model(self, transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig):
         self.backend = "transformerlens"
-        if transcoder_set == 'mlp':
-            transcoders = self.create_dummy_mlp_transcoders()
+        if isinstance(transcoder_set, MLPTranscoderConfig):
+            transcoders = self.create_dummy_mlp_transcoders(transcoder_set.activation_threshold)
         else:
             transcoders = transcoder_set
             transcoders.to(self.cfg.device, self.cfg.dtype)

@@ -2,7 +2,7 @@
 Unified ReplacementModel interface that supports both nnsight and transformerlens backends.
 """
 
-from typing import Literal
+from typing import Literal, NamedTuple
 import torch
 
 from circuit_tracer.transcoder import TranscoderSet
@@ -11,6 +11,18 @@ from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 
 Backend = Literal["nnsight", "transformerlens"]
+MLPTranscoderConfig = NamedTuple('MLPTranscoderConfig', activation_threshold=(float | None))
+
+def parse_mlp_string(s: str) -> MLPTranscoderConfig:
+    assert s.startswith('mlp')
+    mlp_config = s.split('-')
+    if len(mlp_config) > 1:
+        activation_threshold = float(mlp_config[1])
+        if activation_threshold == 0.0:
+            activation_threshold = None
+    else:
+        activation_threshold = 0.25
+    return MLPTranscoderConfig(activation_threshold)
 
 
 class ReplacementModel:
@@ -51,13 +63,16 @@ class ReplacementModel:
         if device is None:
             device = get_default_device()
 
-        transcoders, _ = load_transcoder_from_hub(  # type:ignore
-            transcoder_set,
-            device=device,
-            dtype=dtype,
-            lazy_encoder=lazy_encoder,
-            lazy_decoder=lazy_decoder,
-        )
+        if transcoder_set.startswith('mlp'):
+            transcoders = parse_mlp_string(transcoder_set)
+        else:
+            transcoders, _ = load_transcoder_from_hub(  # type:ignore
+                transcoder_set,
+                device=device,
+                dtype=dtype,
+                lazy_encoder=lazy_encoder,
+                lazy_decoder=lazy_decoder,
+            )
 
         return cls.from_pretrained_and_transcoders(
             model_name=model_name,
@@ -72,7 +87,7 @@ class ReplacementModel:
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder | Literal["mlp"],
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
         backend: Backend = "transformerlens",
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
@@ -125,7 +140,7 @@ class ReplacementModel:
     def from_config(
         cls,
         config,
-        transcoders: TranscoderSet | CrossLayerTranscoder | Literal["mlp"],
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig | str,
         backend: Backend = "transformerlens",
         **kwargs,
     ):
@@ -142,6 +157,11 @@ class ReplacementModel:
         Returns:
             ReplacementModel: The loaded ReplacementModel using the specified backend
         """
+
+        # if someone inputs "mlp-[threshold]"
+        if isinstance(transcoders, str):
+            transcoders = parse_mlp_string(transcoders)
+
         if backend == "nnsight":
             from .replacement_model_nnsight import NNSightReplacementModel
 

@@ -38,6 +38,7 @@ class MLPDummyTranscoder(nn.Module):
         b_dec: torch.Tensor | None,
         activation_function: nn.Module,
         layer_idx: int,
+        activation_threshold: float = 0.25,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ):
@@ -54,6 +55,7 @@ class MLPDummyTranscoder(nn.Module):
         self.d_transcoder = self.W_enc.size(0)
         self.layer_idx = layer_idx
         self.activation_function = activation_function
+        self.activation_threshold = activation_threshold
 
     @property
     def device(self):
@@ -77,7 +79,10 @@ class MLPDummyTranscoder(nn.Module):
 
         if not apply_activation_function:
             return pre_acts
-        return self.activation_function(pre_acts)
+        acts = self.activation_function(pre_acts) 
+        if self.activation_threshold is not None:
+            acts = acts * (acts.abs() > self.activation_threshold)
+        return acts
 
     def decode(self, acts):
         # W_dec is (d_transcoder, d_model), acts is (n_pos, d_transcoder)
@@ -113,6 +118,8 @@ class MLPDummyTranscoder(nn.Module):
         if isinstance(self.activation_function, GatedActivationFunction):
             self.activation_function.set_original_inputs(input_acts)
         acts = self.activation_function(pre_acts)
+        if self.activation_threshold is not None:
+            acts = acts * (acts.abs() > self.activation_threshold)
 
         acts[zero_positions] = 0
 
@@ -212,7 +219,11 @@ class MLPDummyTranscoderSet(nn.Module):
         return iter(self.transcoders)  # type: ignore
 
     def apply_activation_function(self, layer_id, features):
-        return self.transcoders[layer_id].activation_function(features)  # type: ignore
+        acts = self.transcoders[layer_id].activation_function(features)  # type: ignore
+        threshold = self.transcoders[layer_id].activation_threshold
+        if threshold is not None:
+            acts = acts * (acts.abs() > threshold)
+        return acts
 
     def compute_skip(self, layer_id: int, inputs):
         return self.transcoders[layer_id].compute_skip(inputs)  # type: ignore

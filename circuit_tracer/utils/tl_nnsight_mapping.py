@@ -42,6 +42,8 @@ gemma_2_mapping = TransformerLens_NNSight_Mapping(
         ),
         "hook_resid_mid": ("model.layers[{layer}].pre_feedforward_layernorm", "input"),
         "hook_mlp_out": ("model.layers[{layer}].post_feedforward_layernorm", "output"),
+        "mlp.hook_in": ("model.layers[{layer}].mlp", "input"),
+        "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
     },
 )
 
@@ -69,7 +71,8 @@ gemma_3_mapping = TransformerLens_NNSight_Mapping(
             "output",
         ),
         "hook_resid_mid": ("model.layers[{layer}].pre_feedforward_layernorm", "input"),
-        "mlp.hook_in": ("model.layers[{layer}].pre_feedforward_layernorm", "output"),
+        "mlp.hook_in": ("model.layers[{layer}].mlp", "input"),
+        "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
         "hook_mlp_out": ("model.layers[{layer}].post_feedforward_layernorm", "output"),
     },
 )
@@ -97,7 +100,8 @@ gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
             "output",
         ),
         "hook_resid_mid": ("language_model.layers[{layer}].pre_feedforward_layernorm", "input"),
-        "mlp.hook_in": ("language_model.layers[{layer}].pre_feedforward_layernorm", "output"),
+        "mlp.hook_in": ("model.layers[{layer}].mlp", "input"),
+        "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
         "hook_mlp_out": ("language_model.layers[{layer}].post_feedforward_layernorm", "output"),
     },
 )
