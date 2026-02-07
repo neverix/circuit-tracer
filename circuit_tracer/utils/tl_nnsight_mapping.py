@@ -13,6 +13,7 @@ class TransformerLens_NNSight_Mapping:
     embed_location: str  # Location of the embedding Module (the location to which we will attribute for embeddings)
     embed_weight: str  # Location of the embedding weight matrix
     unembed_weight: str  # Location of the unembedding weight matrix
+    mlp: str  # Location of the mlp
     feature_hook_mapping: dict[
         str, tuple[str, Literal["input", "output"]]
     ]  # Mapping from (TransformerLens Hook) to a tuple representing an NNSight Envoy location, and whether we want its input or output
@@ -33,6 +34,7 @@ gemma_2_mapping = TransformerLens_NNSight_Mapping(
     embed_location="model.embed_tokens",
     embed_weight="model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
+    mlp="model.layers[{layer}].mlp",
     feature_hook_mapping={
         "ln2.hook_normalized": (
             "model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0",
@@ -60,6 +62,7 @@ gemma_3_mapping = TransformerLens_NNSight_Mapping(
     embed_location="model.embed_tokens",
     embed_weight="model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
+    mlp="model.layers[{layer}].mlp",
     feature_hook_mapping={
         "ln2.hook_normalized": (
             "model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0",
@@ -87,6 +90,7 @@ gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
     embed_location="language_model.embed_tokens",
     embed_weight="language_model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
+    mlp="model.layers[{layer}].mlp",
     feature_hook_mapping={
         "ln2.hook_normalized": (
             "language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0",
@@ -111,6 +115,7 @@ llama_3_mapping = TransformerLens_NNSight_Mapping(
     embed_location="model.embed_tokens",
     embed_weight="model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
+    mlp="model.layers[{layer}].mlp",
     feature_hook_mapping={
         "hook_resid_mid": ("model.layers[{layer}].post_attention_layernorm", "input"),
         "hook_mlp_out": ("model.layers[{layer}].mlp", "output"),
@@ -132,6 +137,7 @@ qwen_3_mapping = TransformerLens_NNSight_Mapping(
     embed_location="model.embed_tokens",
     embed_weight="model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
+    mlp="model.layers[{layer}].mlp",
     feature_hook_mapping={
         "mlp.hook_in": ("model.layers[{layer}].post_attention_layernorm", "output"),
         "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
@@ -151,6 +157,7 @@ gpt_oss_mapping = TransformerLens_NNSight_Mapping(
     embed_location="model.embed_tokens",
     embed_weight="model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
+    mlp="model.layers[{layer}].mlp",
     feature_hook_mapping={
         "hook_resid_mid": ("model.layers[{layer}].post_attention_layernorm", "input"),
         "mlp.hook_in": ("model.layers[{layer}].post_attention_layernorm", "output"),

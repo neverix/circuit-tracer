@@ -12,8 +12,8 @@ from nnsight.intervention.tracing.tracer import Barrier
 from nnsight import LanguageModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
-from circuit_tracer.transcoder import TranscoderSet
-from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
+from circuit_tracer.transcoder import TranscoderSet, CrossLayerTranscoder, MLPDummyTranscoder, MLPDummyTranscoderSet
+from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 from circuit_tracer.utils.tl_nnsight_mapping import (
@@ -50,7 +50,7 @@ class EnvoyWrapper:
 
 class NNSightReplacementModel(LanguageModel):
     d_transcoder: int
-    transcoders: TranscoderSet | CrossLayerTranscoder
+    transcoders: TranscoderSet | CrossLayerTranscoder | MLPDummyTranscoderSet
     feature_input_locs: list[nn.Module]  # type: ignore
     feature_output_locs: list[nn.Module]  # type: ignore
     attention_locs: list[nn.Module]  # type: ignore
@@ -91,7 +91,7 @@ class NNSightReplacementModel(LanguageModel):
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder,
+        transcoders: TranscoderSet | CrossLayerTranscoder | Literal['mlp'],
         device: torch.device | str = torch.device("cuda"),
         dtype: torch.dtype = torch.float32,
         **kwargs,
@@ -110,9 +110,8 @@ class NNSightReplacementModel(LanguageModel):
         # an object (`self`) to pass to `super().__init__`.  We create an _uninitialised_
         # instance with `__new__`, then run the parent initialiser on it.
 
-        # 1. Allocate the instance without initialising it.
-        model = cls.__new__(cls)
-        # 2. Call the parent (LanguageModel) initializer on this instance.
+
+        model = cls.__new__(cls)        
 
         # Convert ``torch.device`` to a HF-compatible device map
         if isinstance(device, torch.device):
@@ -179,6 +178,29 @@ class NNSightReplacementModel(LanguageModel):
             **kwargs,
         )
 
+    def create_dummy_mlp_transcoders(self) -> MLPDummyTranscoderSet:
+        nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
+        transcoders = {}
+        for layer in range(self.cfg.n_layers):
+            mlp: nn.Module = self._resolve_attr(self, nnsight_config.mlp.format(layer=layer))  # type: ignore
+            W_enc: torch.Tensor = mlp.up_proj.weight  # type: ignore
+            W_dec: torch.Tensor = mlp.down_proj.weight  # type: ignore
+
+            b_enc: torch.Tensor = mlp.up_proj.bias  # type: ignore
+            b_dec: torch.Tensor = mlp.down_proj.bias  # type: ignore
+
+            if hasattr(mlp, 'gate_proj'):
+                W_gate = mlp.gate_proj
+                act_fn = GatedActivationFunction(W_gate, mlp.act_fn)
+            else:
+                act_fn: nn.Module = mlp.act_fn  # type: ignore
+            transcoders[layer] = MLPDummyTranscoder(W_enc, b_enc, W_dec, b_dec, act_fn, layer)
+
+        return MLPDummyTranscoderSet(transcoders, 
+                                     feature_input_hook='mlp.hook_in', 
+                                     feature_output_hook='mlp.hook_out', 
+                                     scan='mlp')
+
     @staticmethod
     def _resolve_attr(root: object, attr_path: str):
         """Resolves a dotted attribute path that can additionally contain Python-style
@@ -208,15 +230,20 @@ class NNSightReplacementModel(LanguageModel):
 
     def _configure_replacement_model(
         self,
-        transcoder_set: TranscoderSet | CrossLayerTranscoder,
+        transcoder_set: TranscoderSet | CrossLayerTranscoder | Literal["mlp"],
     ):
         self.backend = "nnsight"
         self.eval()
         self.cfg = convert_nnsight_config_to_transformerlens(self.config)
 
-        transcoder_set.to(self.device, self.dtype)
-        self.transcoders = transcoder_set
-        self.skip_transcoder = transcoder_set.skip_connection
+        if transcoder_set == 'mlp':
+            transcoders = self.create_dummy_mlp_transcoders()
+        else:
+            transcoders = transcoder_set
+            transcoders.to(self.device, self.dtype)
+
+        self.transcoders = transcoders
+        self.skip_transcoder = transcoders.skip_connection
 
         # ------------------------------------------------------------------
         # Instead of eagerly resolving hook locations here (which can fail
@@ -228,10 +255,10 @@ class NNSightReplacementModel(LanguageModel):
         nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
 
         self._feature_input_pattern, self._feature_input_io = nnsight_config.feature_hook_mapping[
-            transcoder_set.feature_input_hook
+            transcoders.feature_input_hook
         ]
         self._feature_output_pattern, _ = nnsight_config.feature_hook_mapping[
-            transcoder_set.feature_output_hook
+            transcoders.feature_output_hook
         ]
 
         self._attention_pattern = nnsight_config.attention_location_pattern
@@ -243,7 +270,7 @@ class NNSightReplacementModel(LanguageModel):
         # these are real weights, not envoys
         self.embed_weight = self._resolve_attr(self, nnsight_config.embed_weight)
         self.unembed_weight = self._resolve_attr(self, nnsight_config.unembed_weight)
-        self.scan = transcoder_set.scan
+        self.scan = transcoders.scan
 
         # Make sure the replacement model is entirely frozen by default.
         for param in self.parameters():

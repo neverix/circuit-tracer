@@ -1,7 +1,8 @@
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 def rectangle(x: torch.Tensor) -> torch.Tensor:
@@ -60,3 +61,17 @@ class TopK(nn.Module):
         gate = torch.zeros_like(x)
         gate.scatter_(dim=-1, index=indices, value=1)
         return x * gate.to(x.dtype)
+
+class GatedActivationFunction(nn.Module):
+    def __init__(self, W_gate, act_fn):
+        super().__init__()
+        self.W_gate = W_gate
+        self.act_fn = act_fn
+        self.original_inputs: torch.Tensor | None = None
+
+    def set_original_inputs(self, inputs: torch.Tensor):
+        self.original_inputs = inputs
+
+    def forward(self, x: torch.Tensor):
+        assert self.original_inputs is not None
+        return self.act_fn(F.linear(self.original_inputs, self.W_gate)) * x

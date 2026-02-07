@@ -4,4 +4,14 @@ from circuit_tracer.transcoder.single_layer_transcoder import (
     load_transcoder_set,
 )
 
-__all__ = ["SingleLayerTranscoder", "load_transcoder_set", "TranscoderSet"]
+from circuit_tracer.transcoder.cross_layer_transcoder import (
+    CrossLayerTranscoder,
+)
+
+from circuit_tracer.transcoder.mlp_dummy_transcoder import (
+    MLPDummyTranscoder,
+    MLPDummyTranscoderSet,
+)
+
+__all__ = ["SingleLayerTranscoder", "load_transcoder_set", "TranscoderSet", 
+           "CrossLayerTranscoder", "MLPDummyTranscoder", "MLPDummyTranscoderSet"]
