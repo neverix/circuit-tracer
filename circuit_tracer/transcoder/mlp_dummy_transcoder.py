@@ -80,7 +80,11 @@ class MLPDummyTranscoder(nn.Module):
         return self.activation_function(pre_acts)
 
     def decode(self, acts):
-        return F.linear(acts, self.W_dec.T, self.b_dec)
+        # W_dec is (d_transcoder, d_model), acts is (n_pos, d_transcoder)
+        result = acts @ self.W_dec
+        if self.b_dec is not None:
+            result = result + self.b_dec
+        return result
 
     def compute_skip(self, input_acts):
         raise ValueError("MLPDummyTranscoder has no skip connection")
@@ -106,7 +110,9 @@ class MLPDummyTranscoder(nn.Module):
         """
         W_enc = self.W_enc
         pre_acts = F.linear(input_acts.to(W_enc.dtype), W_enc, self.b_enc)
-        acts = self.activation_function(input_acts, pre_acts)
+        if isinstance(self.activation_function, GatedActivationFunction):
+            self.activation_function.set_original_inputs(input_acts)
+        acts = self.activation_function(pre_acts)
 
         acts[zero_positions] = 0
 
@@ -270,7 +276,6 @@ class MLPDummyTranscoderSet(nn.Module):
                 - reconstruction: (n_layers, n_pos, d_model) reconstructed outputs
                 - encoder_vecs: Concatenated encoder vectors for active features
                 - decoder_vecs: Concatenated decoder vectors (scaled by activations)
-                - decoder_biases: Decoder biases for each layer
                 - encoder_to_decoder_map: Mapping from encoder to decoder indices
                 - decoder_locations: Layer and position indices for decoders
         """
@@ -279,7 +284,6 @@ class MLPDummyTranscoderSet(nn.Module):
         reconstruction = torch.zeros_like(mlp_inputs)
         encoder_vectors = []
         decoder_vectors = []
-        decoder_biases = []
         sparse_acts_list = []
 
         for layer, transcoder in enumerate(self.transcoders):
@@ -289,7 +293,6 @@ class MLPDummyTranscoderSet(nn.Module):
             reconstruction[layer], active_decoders = transcoder.decode_sparse(sparse_acts)  # type: ignore
             encoder_vectors.append(active_encoders)
             decoder_vectors.append(active_decoders)
-            decoder_biases.append(transcoder.b_dec.clone())  # type: ignore
             sparse_acts_list.append(sparse_acts)
 
         activation_matrix = torch.stack(sparse_acts_list).coalesce()
@@ -300,7 +303,6 @@ class MLPDummyTranscoderSet(nn.Module):
             "reconstruction": reconstruction,
             "encoder_vecs": torch.cat(encoder_vectors, dim=0),
             "decoder_vecs": torch.cat(decoder_vectors, dim=0),
-            "decoder_biases": torch.stack(decoder_biases),
             "encoder_to_decoder_map": encoder_to_decoder_map,
             "decoder_locations": activation_matrix.indices()[:2],
         }

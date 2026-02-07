@@ -72,7 +72,7 @@ class ReplacementModel:
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder,
+        transcoders: TranscoderSet | CrossLayerTranscoder | Literal["mlp"],
         backend: Backend = "transformerlens",
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
@@ -125,7 +125,7 @@ class ReplacementModel:
     def from_config(
         cls,
         config,
-        transcoders: TranscoderSet | CrossLayerTranscoder,
+        transcoders: TranscoderSet | CrossLayerTranscoder | Literal["mlp"],
         backend: Backend = "transformerlens",
         **kwargs,
     ):

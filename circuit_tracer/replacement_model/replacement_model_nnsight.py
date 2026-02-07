@@ -66,7 +66,7 @@ class NNSightReplacementModel(LanguageModel):
     def from_config(
         cls,
         config: AutoConfig,
-        transcoders: TranscoderSet | CrossLayerTranscoder,  # Accept both
+        transcoders: TranscoderSet | CrossLayerTranscoder | Literal['mlp'],
         **kwargs,
     ) -> "NNSightReplacementModel":
         """Create a NNSightReplacementModel from a given AutoConfig and TranscoderSet
@@ -92,7 +92,7 @@ class NNSightReplacementModel(LanguageModel):
         cls,
         model_name: str,
         transcoders: TranscoderSet | CrossLayerTranscoder | Literal['mlp'],
-        device: torch.device | str = torch.device("cuda"),
+        device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
         **kwargs,
     ) -> "NNSightReplacementModel":
@@ -101,17 +101,21 @@ class NNSightReplacementModel(LanguageModel):
         Args:
             model_name (str): the name of the pretrained HookedTransformer
             transcoders (TranscoderSet): The transcoder set with configuration
+            device (torch.device | None): Device to load the model on. If None, uses default.
+            dtype (torch.dtype): Data type for the model. Defaults to torch.float32.
+            **kwargs: Additional arguments passed to LanguageModel.__init__
 
         Returns:
             NNSightReplacementModel: The loaded NNSightReplacementModel
         """
+        if device is None:
+            device = get_default_device()
+
         # The goal is to build a ReplacementModel instance *using* the parent
         # LanguageModel.__init__.  Since we are in a `@classmethod`, we don't yet have
         # an object (`self`) to pass to `super().__init__`.  We create an _uninitialised_
         # instance with `__new__`, then run the parent initialiser on it.
-
-
-        model = cls.__new__(cls)        
+        model = cls.__new__(cls)
 
         # Convert ``torch.device`` to a HF-compatible device map
         if isinstance(device, torch.device):
@@ -142,6 +146,7 @@ class NNSightReplacementModel(LanguageModel):
             dispatch=True,
             dtype=dtype,
             attn_implementation="eager",
+            **kwargs,
         )
 
         model._configure_replacement_model(transcoders)
@@ -184,21 +189,22 @@ class NNSightReplacementModel(LanguageModel):
         for layer in range(self.cfg.n_layers):
             mlp: nn.Module = self._resolve_attr(self, nnsight_config.mlp.format(layer=layer))  # type: ignore
             W_enc: torch.Tensor = mlp.up_proj.weight  # type: ignore
-            W_dec: torch.Tensor = mlp.down_proj.weight  # type: ignore
+            # Transpose to get (d_mlp, d_model) to match SingleLayerTranscoder convention
+            W_dec: torch.Tensor = mlp.down_proj.weight.T  # type: ignore
 
-            b_enc: torch.Tensor = mlp.up_proj.bias  # type: ignore
-            b_dec: torch.Tensor = mlp.down_proj.bias  # type: ignore
+            b_enc: torch.Tensor | None = getattr(mlp.up_proj, 'bias', None)  # type: ignore
+            b_dec: torch.Tensor | None = getattr(mlp.down_proj, 'bias', None)  # type: ignore
 
             if hasattr(mlp, 'gate_proj'):
-                W_gate = mlp.gate_proj
+                W_gate = mlp.gate_proj.weight  # type: ignore
                 act_fn = GatedActivationFunction(W_gate, mlp.act_fn)
             else:
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
             transcoders[layer] = MLPDummyTranscoder(W_enc, b_enc, W_dec, b_dec, act_fn, layer)
 
-        return MLPDummyTranscoderSet(transcoders, 
-                                     feature_input_hook='mlp.hook_in', 
-                                     feature_output_hook='mlp.hook_out', 
+        return MLPDummyTranscoderSet(transcoders,
+                                     feature_input_hook='hook_resid_mid',
+                                     feature_output_hook='hook_mlp_out',
                                      scan='mlp')
 
     @staticmethod

@@ -96,7 +96,9 @@ class TransformerLensReplacementModel(HookedTransformer):
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder | Literal['mlp'],  # Accept both
+        transcoders: TranscoderSet | CrossLayerTranscoder | Literal['mlp'],
+        device: torch.device | None = None,
+        dtype: torch.dtype = torch.float32,
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from the name of HookedTransformer and TranscoderSet
@@ -104,15 +106,23 @@ class TransformerLensReplacementModel(HookedTransformer):
         Args:
             model_name (str): the name of the pretrained HookedTransformer
             transcoders (TranscoderSet): The transcoder set with configuration
+            device (torch.device | None): Device to load the model on. If None, uses default.
+            dtype (torch.dtype): Data type for the model. Defaults to torch.float32.
+            **kwargs: Additional arguments passed to HookedTransformer.from_pretrained
 
         Returns:
             TransformerLensReplacementModel: The loaded TransformerLensReplacementModel
         """
+        if device is None:
+            device = get_default_device()
+
         model = super().from_pretrained(
             model_name,
             fold_ln=False,
             center_writing_weights=False,
             center_unembed=False,
+            device=device,
+            dtype=dtype,  # type: ignore
             **kwargs,
         )
 
@@ -125,7 +135,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         model_name: str,
         transcoder_set: str,
         device: torch.device | None = None,
-        dtype: torch.dtype | None = torch.float32,
+        dtype: torch.dtype = torch.float32,
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from model name and transcoder config
@@ -166,22 +176,25 @@ class TransformerLensReplacementModel(HookedTransformer):
         transcoders = {}
         for layer in range(self.cfg.n_layers):
             mlp: nn.Module = self.blocks[layer].mlp  # type: ignore
-            W_enc: torch.Tensor = mlp.W_in  # type: ignore
+            # TransformerLens W_in is (d_model, d_mlp), we need (d_mlp, d_model)
+            W_enc: torch.Tensor = mlp.W_in.T  # type: ignore
+            # TransformerLens W_out is (d_mlp, d_model), which matches our convention
             W_dec: torch.Tensor = mlp.W_out  # type: ignore
 
-            b_enc: torch.Tensor = mlp.b_in  # type: ignore
-            b_dec: torch.Tensor = mlp.b_out  # type: ignore
+            b_enc: torch.Tensor | None = getattr(mlp, 'b_in', None)  # type: ignore
+            b_dec: torch.Tensor | None = getattr(mlp, 'b_out', None)  # type: ignore
 
             if hasattr(mlp, 'W_gate'):
-                W_gate = mlp.W_gate
+                # TransformerLens W_gate is (d_model, d_mlp), we need (d_mlp, d_model)
+                W_gate = mlp.W_gate.T
                 act_fn = GatedActivationFunction(W_gate, mlp.act_fn)
             else:
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
             transcoders[layer] = MLPDummyTranscoder(W_enc, b_enc, W_dec, b_dec, act_fn, layer)
 
-        return MLPDummyTranscoderSet(transcoders, 
-                                     feature_input_hook='mlp.hook_in', 
-                                     feature_output_hook='mlp.hook_out', 
+        return MLPDummyTranscoderSet(transcoders,
+                                     feature_input_hook='mlp.hook_in',
+                                     feature_output_hook='mlp.hook_out',
                                      scan='mlp')
 
     def _configure_replacement_model(self, transcoder_set: TranscoderSet | CrossLayerTranscoder | Literal['mlp']):
