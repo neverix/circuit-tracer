@@ -13,9 +13,6 @@ from circuit_tracer.attribution.attribute_nnsight import attribute
 from circuit_tracer.replacement_model.replacement_model_nnsight import (
     NNSightReplacementModel,
 )
-from circuit_tracer.replacement_model.replacement_model_transformerlens import (
-    TransformerLensReplacementModel,
-)
 from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 
@@ -181,7 +178,7 @@ def verify_token_and_error_edges(
 
 
 def verify_feature_edges(
-    model: NNSightReplacementModel | TransformerLensReplacementModel,
+    model: NNSightReplacementModel,
     graph: Graph,
     n_samples: int = 100,
     act_atol=5e-4,
