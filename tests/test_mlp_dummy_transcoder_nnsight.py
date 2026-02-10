@@ -11,6 +11,7 @@ from circuit_tracer.replacement_model.replacement_model_nnsight import (
     NNSightReplacementModel,
 )
 from circuit_tracer import ReplacementModel
+from circuit_tracer.transcoder import MLPDummyTranscoderSet
 
 
 gemma_2_config_dict = {
@@ -86,19 +87,20 @@ def test_nnsight_mlp_dummy_transcoder_output_matches_mlp():
     model.tokenizer.pad_token = model.tokenizer.eos_token
 
     from circuit_tracer.utils.tl_nnsight_mapping import get_mapping
-    nnsight_config = get_mapping(model.config.architectures[0])
+    nnsight_config = get_mapping(model.config.architectures[0])  # type: ignore
     mlp = model._resolve_attr(model, nnsight_config.mlp.format(layer=0))
     transcoders = _unwrap_transcoders(model)
+    assert isinstance(transcoders, MLPDummyTranscoderSet)
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
     test_input = torch.randn(3, config.hidden_size, dtype=torch.float32)
 
     with torch.no_grad():
-        gate_out = mlp.act_fn(mlp.gate_proj(test_input))
-        up_out = mlp.up_proj(test_input)
+        gate_out = mlp.act_fn(mlp.gate_proj(test_input))  # type: ignore
+        up_out = mlp.up_proj(test_input)  # type: ignore
         hidden = gate_out * up_out
-        mlp_output = mlp.down_proj(hidden)
+        mlp_output = mlp.down_proj(hidden)  # type: ignore
 
         transcoder_encoded = transcoder.encode(test_input)
         transcoder_output = transcoder.decode(transcoder_encoded)
@@ -115,6 +117,7 @@ def test_nnsight_mlp_dummy_transcoder_output_matches_mlp_trace():
     model.tokenizer.pad_token = model.tokenizer.eos_token
 
     transcoders = _unwrap_transcoders(model)
+    assert isinstance(transcoders, MLPDummyTranscoderSet)
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
@@ -141,6 +144,7 @@ def test_nnsight_mlp_dummy_transcoder_encode_sparse():
     model.tokenizer.pad_token = model.tokenizer.eos_token
 
     transcoders = _unwrap_transcoders(model)
+    assert isinstance(transcoders, MLPDummyTranscoderSet)
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
@@ -166,6 +170,7 @@ def test_nnsight_mlp_dummy_transcoder_decode_sparse():
     model.tokenizer.pad_token = model.tokenizer.eos_token
 
     transcoders = _unwrap_transcoders(model)
+    assert isinstance(transcoders, MLPDummyTranscoderSet)
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
@@ -194,7 +199,7 @@ def test_nnsight_mlp_get_activations():
     tokenizer_class = type(model.tokenizer)
     original_all_special_ids = tokenizer_class.all_special_ids
     try:
-        tokenizer_class.all_special_ids = property(lambda self: [0])
+        tokenizer_class.all_special_ids = property(lambda self: [0])  # type: ignore
 
         logits, activation_cache = model.get_activations(s)
 
@@ -227,4 +232,4 @@ def test_nnsight_mlp_get_activations():
         assert torch.allclose(pre_activation_cache, pre_act_traced_cache)
 
     finally:
-        tokenizer_class.all_special_ids = original_all_special_ids
+        tokenizer_class.all_special_ids = original_all_special_ids  # type: ignore

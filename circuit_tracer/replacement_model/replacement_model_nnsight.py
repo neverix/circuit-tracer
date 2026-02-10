@@ -603,7 +603,6 @@ class NNSightReplacementModel(LanguageModel):
         self,
         inputs: str | torch.Tensor,
         constrained_layers: range | None = None,
-        apply_activation_function: bool = True,
     ) -> tuple[torch.Tensor, list[Callable]]:
         """Sets up an intervention with either frozen attention + LayerNorm(default) or frozen
         attention, LayerNorm, and MLPs, for constrained layers
@@ -630,9 +629,7 @@ class NNSightReplacementModel(LanguageModel):
                 locs_to_freeze["feature_output"] = self.feature_output_locs
             return locs_to_freeze
 
-        activation_matrix, activation_fn = self.get_activation_fn(
-            apply_activation_function=apply_activation_function,
-        )
+        activation_matrix, activation_fn = self.get_activation_fn()
         cache = {}
 
         # somehow, self is getting corrupted / changed somehow into type `EnvoyWrapper`, which causes issues.
@@ -843,7 +840,6 @@ class NNSightReplacementModel(LanguageModel):
             original_activations, freeze_fns = self.setup_intervention_with_freeze(
                 inputs,
                 constrained_layers=constrained_layers,
-                apply_activation_function=apply_activation_function,
             )
         else:
             original_activations, freeze_fns = None, []
@@ -963,7 +959,6 @@ class NNSightReplacementModel(LanguageModel):
             original_activations, freeze_fns = self.setup_intervention_with_freeze(
                 inputs,
                 constrained_layers=constrained_layers,
-                apply_activation_function=apply_activation_function,
             )
         else:
             original_activations, freeze_fns = None, []

@@ -501,7 +501,6 @@ class TransformerLensReplacementModel(HookedTransformer):
         self,
         inputs: str | torch.Tensor,
         constrained_layers: range | None = None,
-        apply_activation_function: bool = True,
     ) -> tuple[torch.Tensor, list[tuple[str, Callable]]]:
         """Sets up an intervention with either frozen attention + LayerNorm(default) or frozen
         attention, LayerNorm, and MLPs, for constrained layers
@@ -540,9 +539,7 @@ class TransformerLensReplacementModel(HookedTransformer):
 
         freeze_cache, cache_hooks, _ = self.get_caching_hooks(names_filter=selected_hook_points)
 
-        original_activations, activation_caching_hooks = self._get_activation_caching_hooks(
-            apply_activation_function=apply_activation_function,
-        )
+        original_activations, activation_caching_hooks = self._get_activation_caching_hooks()
         self.run_with_hooks(inputs, fwd_hooks=cache_hooks + activation_caching_hooks)
 
         def freeze_hook(activations, hook):
@@ -642,7 +639,6 @@ class TransformerLensReplacementModel(HookedTransformer):
         elif (freeze_attention or constrained_layers) and interventions:
             original_activations, freeze_hooks = self.setup_intervention_with_freeze(
                 inputs, constrained_layers=constrained_layers,
-                apply_activation_function=apply_activation_function,
             )
             n_pos = original_activations.size(1)
         else:

@@ -11,6 +11,7 @@ from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
 from circuit_tracer import ReplacementModel
+from circuit_tracer.transcoder import MLPDummyTranscoderSet
 from circuit_tracer.utils import get_default_device
 
 # Use 'mlp-0' to disable the activation threshold for tests, matching the
@@ -71,8 +72,9 @@ def test_tl_mlp_dummy_transcoder_output_matches_mlp():
     cfg = create_small_tl_config()
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
+    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
 
-    mlp = model.blocks[0].mlp.old_mlp
+    mlp = model.blocks[0].mlp.old_mlp  # type:ignore
     transcoder = model.transcoders[0]
 
     torch.manual_seed(42)
@@ -80,11 +82,11 @@ def test_tl_mlp_dummy_transcoder_output_matches_mlp():
 
     with torch.no_grad():
         if hasattr(mlp, 'W_gate'):
-            gate_out = mlp.act_fn(test_input @ mlp.W_gate)
-            hidden = gate_out * (test_input @ mlp.W_in)
+            gate_out = mlp.act_fn(test_input @ mlp.W_gate)  # type:ignore
+            hidden = gate_out * (test_input @ mlp.W_in)  # type:ignore
         else:
-            hidden = mlp.act_fn(test_input @ mlp.W_in)
-        mlp_output = hidden @ mlp.W_out + mlp.b_out
+            hidden = mlp.act_fn(test_input @ mlp.W_in)  # type:ignore
+        mlp_output = hidden @ mlp.W_out + mlp.b_out  # type:ignore
 
         transcoder_encoded = transcoder.encode(test_input)
         transcoder_output = transcoder.decode(transcoder_encoded)
@@ -98,6 +100,7 @@ def test_tl_mlp_dummy_transcoder_encode_sparse():
     cfg = create_small_tl_config()
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
+    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
 
     transcoder = model.transcoders[0]
 
@@ -120,6 +123,7 @@ def test_tl_mlp_dummy_transcoder_decode_sparse():
     cfg = create_small_tl_config()
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
+    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
 
     transcoder = model.transcoders[0]
 
@@ -143,7 +147,7 @@ def test_tl_mlp_get_activations():
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
 
-    type(model.tokenizer).all_special_ids = property(lambda self: [0])
+    type(model.tokenizer).all_special_ids = property(lambda self: [0])  # type:ignore
 
     s = torch.tensor([0, 3, 4, 3, 2])
 
