@@ -12,7 +12,7 @@ from nnsight.intervention.tracing.tracer import Barrier
 from nnsight import LanguageModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
-from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig, parse_mlp_string
+from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.transcoder import TranscoderSet, CrossLayerTranscoder, MLPDummyTranscoder, MLPDummyTranscoderSet
 from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
@@ -79,11 +79,6 @@ class NNSightReplacementModel(LanguageModel):
         Returns:
             NNSightReplacementModel: The loaded NNSightReplacementModel
         """
-
-        # if someone inputs "mlp-[threshold]"
-        if isinstance(transcoders, str):
-            transcoders = parse_mlp_string(transcoders)
-
         config._attn_implementation = "eager"  # type: ignore
         hf_model = AutoModelForCausalLM.from_config(config)
         hf_tokenizer = AutoTokenizer.from_pretrained(config._name_or_path)  # type: ignore
@@ -179,10 +174,7 @@ class NNSightReplacementModel(LanguageModel):
         if device is None:
             device = get_default_device()
 
-        if transcoder_set.startswith('mlp'):
-            transcoders = parse_mlp_string(transcoder_set)
-        else:
-            transcoders, _ = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)  # type: ignore
+        transcoders, _ = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)  # type: ignore
 
         return cls.from_pretrained_and_transcoders(
             model_name,
@@ -192,7 +184,9 @@ class NNSightReplacementModel(LanguageModel):
             **kwargs,
         )
 
-    def create_dummy_mlp_transcoders(self, activation_threshold: float) -> MLPDummyTranscoderSet:
+    def create_dummy_mlp_transcoders(
+        self, activation_threshold: float | None, scan: str | None = None
+    ) -> MLPDummyTranscoderSet:
         nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
         transcoders = {}
         for layer in range(self.cfg.n_layers):
@@ -214,7 +208,7 @@ class NNSightReplacementModel(LanguageModel):
         return MLPDummyTranscoderSet(transcoders,
                                      feature_input_hook='mlp.hook_in',
                                      feature_output_hook='mlp.hook_out',
-                                     scan='mlp')
+                                     scan=scan)
 
     @staticmethod
     def _resolve_attr(root: object, attr_path: str):
@@ -252,7 +246,9 @@ class NNSightReplacementModel(LanguageModel):
         self.cfg = convert_nnsight_config_to_transformerlens(self.config)
 
         if isinstance(transcoder_set, MLPTranscoderConfig):
-            transcoders = self.create_dummy_mlp_transcoders(transcoder_set.activation_threshold)
+            transcoders = self.create_dummy_mlp_transcoders(
+                transcoder_set.activation_threshold, scan=transcoder_set.scan
+            )
         else:
             transcoders = transcoder_set
             transcoders.to(self.device, self.dtype)

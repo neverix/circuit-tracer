@@ -11,18 +11,12 @@ from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 
 Backend = Literal["nnsight", "transformerlens"]
-MLPTranscoderConfig = NamedTuple('MLPTranscoderConfig', activation_threshold=(float | None))
 
-def parse_mlp_string(s: str) -> MLPTranscoderConfig:
-    assert s.startswith('mlp')
-    mlp_config = s.split('-')
-    if len(mlp_config) > 1:
-        activation_threshold = float(mlp_config[1])
-        if activation_threshold == 0.0:
-            activation_threshold = None
-    else:
-        activation_threshold = 0.25
-    return MLPTranscoderConfig(activation_threshold)
+
+class MLPTranscoderConfig(NamedTuple):
+    activation_threshold: float | None
+    scan: str | None = None
+
 
 
 class ReplacementModel:
@@ -63,16 +57,13 @@ class ReplacementModel:
         if device is None:
             device = get_default_device()
 
-        if transcoder_set.startswith('mlp'):
-            transcoders = parse_mlp_string(transcoder_set)
-        else:
-            transcoders, _ = load_transcoder_from_hub(  # type:ignore
-                transcoder_set,
-                device=device,
-                dtype=dtype,
-                lazy_encoder=lazy_encoder,
-                lazy_decoder=lazy_decoder,
-            )
+        transcoders, _ = load_transcoder_from_hub(  # type:ignore
+            transcoder_set,
+            device=device,
+            dtype=dtype,
+            lazy_encoder=lazy_encoder,
+            lazy_decoder=lazy_decoder,
+        )
 
         return cls.from_pretrained_and_transcoders(
             model_name=model_name,
@@ -140,7 +131,7 @@ class ReplacementModel:
     def from_config(
         cls,
         config,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig | str,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
         backend: Backend = "transformerlens",
         **kwargs,
     ):
@@ -149,19 +140,14 @@ class ReplacementModel:
         Args:
             config: Model configuration (AutoConfig for nnsight, HookedTransformerConfig
                 for transformerlens)
-            transcoders (Union[TranscoderSet, CrossLayerTranscoder]): The transcoder set or
-                cross-layer transcoder
+            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPTranscoderConfig]):
+                The transcoder set, cross-layer transcoder, or MLP transcoder config
             backend (Backend): Which backend to use - "nnsight" or "transformerlens"
             **kwargs: Additional arguments passed to the backend-specific implementation
 
         Returns:
             ReplacementModel: The loaded ReplacementModel using the specified backend
         """
-
-        # if someone inputs "mlp-[threshold]"
-        if isinstance(transcoders, str):
-            transcoders = parse_mlp_string(transcoders)
-
         if backend == "nnsight":
             from .replacement_model_nnsight import NNSightReplacementModel
 

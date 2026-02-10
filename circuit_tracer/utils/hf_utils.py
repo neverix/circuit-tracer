@@ -196,6 +196,16 @@ def load_transcoders(
             dtype=dtype,
             device=device,
         )
+    elif model_kind == "mlp":
+        from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
+
+        activation_threshold = config.get("activation_threshold", 0.25)
+        if activation_threshold == 0.0:
+            activation_threshold = None
+        return MLPTranscoderConfig(
+            activation_threshold=activation_threshold,
+            scan=config["scan"],
+        )
     else:
         raise ValueError(f"Unknown model kind: {model_kind}")
 

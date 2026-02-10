@@ -10,6 +10,7 @@ from transformers import AutoConfig, Gemma2Config
 
 from circuit_tracer import Graph, ReplacementModel
 from circuit_tracer.attribution.attribute_nnsight import attribute
+from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.replacement_model.replacement_model_nnsight import (
     NNSightReplacementModel,
 )
@@ -245,7 +246,7 @@ def verify_feature_edges(
 
 
 def load_dummy_gemma_model(cfg: AutoConfig) -> NNSightReplacementModel:
-    model = ReplacementModel.from_config(cfg, "mlp", backend="nnsight")
+    model = ReplacementModel.from_config(cfg, MLPTranscoderConfig(activation_threshold=None), backend="nnsight")
 
     for _, param in model.named_parameters():
         nn.init.uniform_(param, a=-1, b=1)
@@ -315,7 +316,9 @@ def test_large_gemma_model():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_2_2b():
     s = "The National Digital Analytics Group (ND"
-    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "mlp", backend="nnsight")
+    model = ReplacementModel.from_pretrained_and_transcoders(
+        "google/gemma-2-2b", MLPTranscoderConfig(activation_threshold=0.25), backend="nnsight"
+    )
     assert isinstance(model, NNSightReplacementModel)
 
     graph = attribute(s, model)

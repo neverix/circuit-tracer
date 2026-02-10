@@ -10,6 +10,7 @@ from transformer_lens import HookedTransformerConfig
 
 from circuit_tracer import Graph, ReplacementModel
 from circuit_tracer.attribution.attribute_transformerlens import attribute
+from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
@@ -187,7 +188,7 @@ def verify_feature_edges(
 
 
 def load_dummy_gemma_model(cfg: HookedTransformerConfig) -> TransformerLensReplacementModel:
-    model = ReplacementModel.from_config(cfg, "mlp")
+    model = ReplacementModel.from_config(cfg, MLPTranscoderConfig(activation_threshold=None))
     assert isinstance(model, TransformerLensReplacementModel)
 
     type(model.tokenizer).all_special_ids = property(lambda self: [0])  # type: ignore
@@ -374,7 +375,9 @@ def test_large_gemma_model():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_2_2b():
     s = "The National Digital Analytics Group (ND"
-    model = ReplacementModel.from_pretrained("google/gemma-2-2b", "mlp")
+    model = ReplacementModel.from_pretrained_and_transcoders(
+        "google/gemma-2-2b", MLPTranscoderConfig(activation_threshold=0.25)
+    )
     assert isinstance(model, TransformerLensReplacementModel)
     graph = attribute(s, model)
 

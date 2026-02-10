@@ -11,12 +11,12 @@ from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
 from circuit_tracer import ReplacementModel
+from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.transcoder import MLPDummyTranscoderSet
 from circuit_tracer.utils import get_default_device
 
-# Use 'mlp-0' to disable the activation threshold for tests, matching the
-# nnsight tests and avoiding any Envoy wrapping issues.
-MLP_NO_THRESHOLD = 'mlp-0'
+# Disable the activation threshold for tests.
+MLP_NO_THRESHOLD = MLPTranscoderConfig(activation_threshold=None)
 
 
 @pytest.fixture(autouse=True)

@@ -11,6 +11,7 @@ from circuit_tracer.replacement_model.replacement_model_nnsight import (
     NNSightReplacementModel,
 )
 from circuit_tracer import ReplacementModel
+from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.transcoder import MLPDummyTranscoderSet
 
 
@@ -46,9 +47,8 @@ gemma_2_config_dict = {
     "_name_or_path": "openai-community/gpt2",
 }
 
-# Use 'mlp-0' to disable the activation threshold; setting it via the config
-# string avoids NNSight Envoy wrapping issues that prevent direct attribute access.
-MLP_NO_THRESHOLD = 'mlp-0'
+# Disable the activation threshold for tests.
+MLP_NO_THRESHOLD = MLPTranscoderConfig(activation_threshold=None)
 
 
 @pytest.fixture(autouse=True)

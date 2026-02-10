@@ -38,7 +38,7 @@ class MLPDummyTranscoder(nn.Module):
         b_dec: torch.Tensor | None,
         activation_function: nn.Module,
         layer_idx: int,
-        activation_threshold: float = 0.25,
+        activation_threshold: float | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ):
@@ -177,6 +177,7 @@ class MLPDummyTranscoderSet(nn.Module):
     transcoders: nn.ModuleList
     n_layers: int
     d_transcoder: int
+    scan: str | list[str] | None
 
     def __init__(
         self,

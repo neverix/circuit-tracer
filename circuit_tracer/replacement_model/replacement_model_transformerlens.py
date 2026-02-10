@@ -12,7 +12,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
 from circuit_tracer.attribution.context_transformerlens import AttributionContext
-from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig, parse_mlp_string
+from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.transcoder import TranscoderSet, CrossLayerTranscoder, MLPDummyTranscoder, MLPDummyTranscoderSet
 from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
@@ -77,22 +77,18 @@ class TransformerLensReplacementModel(HookedTransformer):
     def from_config(
         cls,
         config: HookedTransformerConfig,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig | str,  # Accept both
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from a given HookedTransformerConfig and TranscoderSet
 
         Args:
             config (HookedTransformerConfig): the config of the HookedTransformer
-            transcoders (TranscoderSet): The transcoder set with configuration
+            transcoders: The transcoder set, cross-layer transcoder, or MLP transcoder config
 
         Returns:
             TransformerLensReplacementModel: The loaded TransformerLensReplacementModel
         """
-        # if someone inputs "mlp-[threshold]"
-        if isinstance(transcoders, str):
-            transcoders = parse_mlp_string(transcoders)
-
         model = cls(config, **kwargs)
         model._configure_replacement_model(transcoders)
         return model
@@ -164,12 +160,9 @@ class TransformerLensReplacementModel(HookedTransformer):
         if device is None:
             device = get_default_device()
 
-        if transcoder_set.startswith('mlp'):
-            transcoders = parse_mlp_string(transcoder_set)
-        else:
-            transcoders, _ = load_transcoder_from_hub(transcoder_set, 
-                                                      device=device, 
-                                                      dtype=dtype)  # type: ignore
+        transcoders, _ = load_transcoder_from_hub(transcoder_set,
+                                                  device=device,
+                                                  dtype=dtype)  # type: ignore
 
         return cls.from_pretrained_and_transcoders(
             model_name,
@@ -179,7 +172,9 @@ class TransformerLensReplacementModel(HookedTransformer):
             **kwargs,
         )
 
-    def create_dummy_mlp_transcoders(self, activation_threshold) -> MLPDummyTranscoderSet:
+    def create_dummy_mlp_transcoders(
+        self, activation_threshold: float | None, scan: str | None = None
+    ) -> MLPDummyTranscoderSet:
         transcoders = {}
         for layer in range(self.cfg.n_layers):
             mlp: nn.Module = self.blocks[layer].mlp  # type: ignore
@@ -202,12 +197,14 @@ class TransformerLensReplacementModel(HookedTransformer):
         return MLPDummyTranscoderSet(transcoders,
                                      feature_input_hook='mlp.hook_in',
                                      feature_output_hook='mlp.hook_out',
-                                     scan='mlp')
+                                     scan=scan)
 
     def _configure_replacement_model(self, transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig):
         self.backend = "transformerlens"
         if isinstance(transcoder_set, MLPTranscoderConfig):
-            transcoders = self.create_dummy_mlp_transcoders(transcoder_set.activation_threshold)
+            transcoders = self.create_dummy_mlp_transcoders(
+                transcoder_set.activation_threshold, scan=transcoder_set.scan
+            )
         else:
             transcoders = transcoder_set
             transcoders.to(self.cfg.device, self.cfg.dtype)
