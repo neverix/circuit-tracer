@@ -28,6 +28,7 @@ import torch
 from tqdm import tqdm
 
 from circuit_tracer.graph import Graph, compute_partial_influences
+from circuit_tracer.transcoder import MLPDummyTranscoderSet
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
@@ -137,7 +138,7 @@ def _run_attribution(
         ctx._resid_activations[-1] = model.ln_final(residual)
     logger.info(f"Forward pass completed in {time.time() - phase_start:.2f}s")
 
-    if offload:
+    if offload and not isinstance(model.transcoders, MLPDummyTranscoderSet):
         offload_handles += offload_modules([block.mlp for block in model.blocks], offload)
 
     # Phase 2: build input vector list

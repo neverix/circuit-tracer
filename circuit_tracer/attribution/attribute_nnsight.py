@@ -28,6 +28,7 @@ import torch
 from tqdm import tqdm
 
 from circuit_tracer.graph import Graph, compute_partial_influences
+from circuit_tracer.transcoder import MLPDummyTranscoderSet
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
 from circuit_tracer.utils.disk_offload import offload_modules
 from circuit_tracer.utils.salient_logits import compute_salient_logits
@@ -143,9 +144,10 @@ def _run_attribution(
     logger.info(f"Forward pass completed in {time.time() - phase_start:.2f}s")
 
     if offload:
-        offload_handles += offload_modules(
-            [layer.mlp for layer in getattr(model.pre_logit_location, "layers")], offload
-        )
+        if not isinstance(model.transcoders, MLPDummyTranscoderSet):
+            offload_handles += offload_modules(
+                [layer.mlp for layer in getattr(model.pre_logit_location, "layers")], offload
+            )
         if model.skip_transcoder:
             offload_handles += offload_modules(model.transcoders, offload)
 
