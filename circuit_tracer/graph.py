@@ -160,13 +160,26 @@ def compute_edge_influence(pruned_matrix: torch.Tensor, logit_weights: torch.Ten
 
 
 def find_threshold(scores: torch.Tensor, threshold: float):
-    # Find score threshold that keeps the desired fraction of total influence
-    sorted_scores = torch.sort(scores, descending=True).values
-    cumulative_score = torch.cumsum(sorted_scores, dim=0) / torch.sum(sorted_scores)
-    threshold_index: int = int(torch.searchsorted(cumulative_score, threshold).item())
-    # make sure we don't go out of bounds (only really happens at threshold=1.0)
-    threshold_index = min(threshold_index, len(cumulative_score) - 1)
-    return sorted_scores[threshold_index]
+    # Find score threshold that keeps the desired fraction of total influence.
+    # Use quantile for large tensors (torch.sort fails beyond INT_MAX elements).
+    if scores.numel() <= 2**31 - 1:
+        sorted_scores = torch.sort(scores, descending=True).values
+        cumulative_score = torch.cumsum(sorted_scores, dim=0) / torch.sum(sorted_scores)
+        threshold_index: int = int(torch.searchsorted(cumulative_score, threshold).item())
+        threshold_index = min(threshold_index, len(cumulative_score) - 1)
+        return sorted_scores[threshold_index]
+    else:
+        # Binary search on score value — no sorting needed, no GPU→CPU sync in loop.
+        total = scores.sum().clamp(min=1e-10)
+        lo = scores.new_zeros(())
+        hi = scores.max()
+        threshold_t = scores.new_tensor(threshold)
+        for _ in range(64):
+            mid = (lo + hi) / 2
+            frac = scores[scores >= mid].sum() / total
+            lo = torch.where(frac >= threshold_t, mid, lo)
+            hi = torch.where(frac >= threshold_t, hi, mid)
+        return lo
 
 
 class PruneResult(NamedTuple):
