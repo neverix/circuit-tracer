@@ -185,7 +185,8 @@ class NNSightReplacementModel(LanguageModel):
         )
 
     def create_dummy_mlp_transcoders(
-        self, activation_threshold: float | None, scan: str | None = None
+        self, activation_threshold: float | None, scan: str | None = None,
+        relp: bool = False, half_rule: bool | None = None,
     ) -> MLPDummyTranscoderSet:
         nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
         transcoders = {}
@@ -200,7 +201,7 @@ class NNSightReplacementModel(LanguageModel):
 
             if hasattr(mlp, 'gate_proj'):
                 W_gate = mlp.gate_proj.weight  # type: ignore
-                act_fn = GatedActivationFunction(W_gate, mlp.act_fn)
+                act_fn = GatedActivationFunction(W_gate, mlp.act_fn, relp=relp, half_rule=half_rule)
             else:
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
             transcoders[layer] = MLPDummyTranscoder(W_enc, b_enc, W_dec, b_dec, act_fn, layer, activation_threshold)
@@ -247,7 +248,8 @@ class NNSightReplacementModel(LanguageModel):
 
         if isinstance(transcoder_set, MLPTranscoderConfig):
             transcoders = self.create_dummy_mlp_transcoders(
-                transcoder_set.activation_threshold, scan=transcoder_set.scan
+                transcoder_set.activation_threshold, scan=transcoder_set.scan,
+                relp=transcoder_set.relp, half_rule=transcoder_set.half_rule,
             )
         else:
             transcoders = transcoder_set

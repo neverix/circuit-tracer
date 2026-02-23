@@ -105,6 +105,10 @@ class MLPDummyTranscoder(nn.Module):
     def encode_sparse(self, input_acts, zero_positions: slice = slice(0, 1)):
         """Encode and return sparse activations with active encoder vectors.
 
+        With relp=True on the activation function, encoder vectors are computed
+        via autograd through GatedActivationFunction, which uses frozen activation
+        derivatives and HalfRule (RelP, https://arxiv.org/abs/2508.21258).
+
         Args:
             input_acts: Input activations
             zero_positions: slice representing the positions to zero out
@@ -124,8 +128,22 @@ class MLPDummyTranscoder(nn.Module):
         acts[zero_positions] = 0
 
         sparse_acts = acts.to_sparse()
-        _, feat_idx = sparse_acts.indices()
-        active_encoders = W_enc[feat_idx]
+        pos_idx, feat_idx = sparse_acts.indices()
+
+        if isinstance(self.activation_function, GatedActivationFunction) and self.activation_function.relp:
+            # Encoder vectors via autograd through GatedActivationFunction,
+            # which applies frozen activation + HalfRule in its backward pass.
+            with torch.enable_grad():
+                x = input_acts.detach().requires_grad_(True)
+                pre = F.linear(x, W_enc, self.b_enc)
+                self.activation_function.set_original_inputs(x)
+                acts_grad = self.activation_function(pre)
+                active_encoders = torch.stack([
+                    torch.autograd.grad(acts_grad[p, s], x, retain_graph=True)[0][p]
+                    for p, s in zip(pos_idx, feat_idx)
+                ]) if len(pos_idx) > 0 else torch.empty(0, self.d_model)
+        else:
+            active_encoders = W_enc[feat_idx]
 
         return sparse_acts, active_encoders
 

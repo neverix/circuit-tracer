@@ -16,6 +16,12 @@ Backend = Literal["nnsight", "transformerlens"]
 class MLPTranscoderConfig(NamedTuple):
     activation_threshold: float | None
     scan: str | None = None
+    # RelP: frozen Jacobian encoder vectors for gated MLPs.
+    # https://arxiv.org/abs/2508.21258
+    relp: bool = False
+    # HalfRule correction for bilinear double-counting (gate*up).
+    # None = follows relp setting; explicit True/False overrides.
+    half_rule: bool | None = None
 
 
 
