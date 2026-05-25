@@ -10,7 +10,13 @@ from urllib.parse import parse_qs, urlparse
 import torch
 import yaml
 from huggingface_hub import get_token, hf_api, hf_hub_download, snapshot_download
-from huggingface_hub.constants import HF_HUB_ENABLE_HF_TRANSFER
+try:
+    from huggingface_hub.constants import HF_HUB_ENABLE_HF_TRANSFER
+except ImportError:
+    # huggingface_hub >= 1.0 removed this constant; read env var directly
+    HF_HUB_ENABLE_HF_TRANSFER = os.environ.get(
+        "HF_HUB_ENABLE_HF_TRANSFER", "0"
+    ).lower() in ("1", "true", "yes")
 from huggingface_hub.utils.tqdm import tqdm as hf_tqdm
 from tqdm.contrib.concurrent import thread_map
 
@@ -327,10 +333,16 @@ def download_hf_uris(uris: Iterable[str], max_workers: int = 8) -> dict[str, str
     unique_repos = {info.repo_id for info in parsed_map.values()}
     token = get_token()
 
-    for repo_id in unique_repos:
-        if hf_api.repo_info(repo_id=repo_id, token=token).gated is not False:
-            if token is None:
-                raise PermissionError("Cannot access a gated repo without a hf token.")
+    # Skip the network call in offline mode (HF_HUB_OFFLINE=1). hf_hub_download
+    # below will use the cached files only and surface its own error if missing.
+    if not os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
+        for repo_id in unique_repos:
+            try:
+                if hf_api.repo_info(repo_id=repo_id, token=token).gated is not False:
+                    if token is None:
+                        raise PermissionError("Cannot access a gated repo without a hf token.")
+            except Exception as e:
+                logger.warning(f"Pre-flight check for {repo_id} failed ({e}); relying on cache.")
 
     logger.info("Pre-flight check complete. Starting downloads...")
 

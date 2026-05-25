@@ -431,6 +431,86 @@ def test_relp_encoder_vectors():
     assert torch.allclose(plain_encoders, W_up[feat_idx2], atol=1e-6)
 
 
+def test_analytic_vs_autograd_encoder_vectors():
+    """Verify analytic RelP encoder vectors match the autograd reference.
+
+    Tests both GELU tanh (Gemma) and SiLU (Llama), with and without
+    half_rule, and with/without encoder bias.
+    """
+    from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
+    from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPDummyTranscoder
+
+    torch.manual_seed(123)
+
+    d_model, d_mlp = 8, 16
+    n_pos = 6
+
+    W_up = torch.randn(d_mlp, d_model)
+    W_gate = torch.randn(d_mlp, d_model)
+    W_dec = torch.randn(d_mlp, d_model)
+    input_acts = torch.randn(n_pos, d_model)
+
+    configs = [
+        ("gelu_tanh, no half_rule", nn.GELU(approximate='tanh'), False),
+        ("gelu_tanh, half_rule", nn.GELU(approximate='tanh'), True),
+        ("silu, no half_rule", nn.SiLU(), False),
+        ("silu, half_rule", nn.SiLU(), True),
+    ]
+
+    for label, act_fn_module, half_rule in configs:
+        act_fn = GatedActivationFunction(W_gate, act_fn_module, relp=True, half_rule=half_rule)
+        transcoder = MLPDummyTranscoder(
+            W_enc=W_up, b_enc=None, W_dec=W_dec,
+            b_dec=None, activation_function=act_fn, layer_idx=0,
+        )
+
+        sparse_acts, analytic_encoders = transcoder.encode_sparse(input_acts)
+        pos_idx, feat_idx = sparse_acts.indices()
+
+        if len(pos_idx) == 0:
+            continue
+
+        autograd_encoders = transcoder._compute_relp_encoders_autograd(
+            input_acts, pos_idx, feat_idx
+        )
+
+        assert torch.allclose(analytic_encoders, autograd_encoders, atol=1e-5), (
+            f"{label}: max diff = {(analytic_encoders - autograd_encoders).abs().max().item()}"
+        )
+
+    # Test with encoder bias (b_enc != None)
+    b_enc = torch.randn(d_mlp)
+    act_fn_bias = GatedActivationFunction(
+        W_gate, nn.GELU(approximate='tanh'), relp=True, half_rule=True,
+    )
+    transcoder_bias = MLPDummyTranscoder(
+        W_enc=W_up, b_enc=b_enc, W_dec=W_dec,
+        b_dec=None, activation_function=act_fn_bias, layer_idx=0,
+    )
+
+    sparse_acts_b, analytic_b = transcoder_bias.encode_sparse(input_acts)
+    pos_b, feat_b = sparse_acts_b.indices()
+    if len(pos_b) > 0:
+        autograd_b = transcoder_bias._compute_relp_encoders_autograd(
+            input_acts, pos_b, feat_b
+        )
+        assert torch.allclose(analytic_b, autograd_b, atol=1e-5), (
+            f"b_enc: max diff = {(analytic_b - autograd_b).abs().max().item()}"
+        )
+
+    # Test zero active features (high threshold → nothing active)
+    act_fn_empty = GatedActivationFunction(
+        W_gate, nn.GELU(approximate='tanh'), relp=True, half_rule=True,
+    )
+    transcoder_empty = MLPDummyTranscoder(
+        W_enc=W_up, b_enc=None, W_dec=W_dec,
+        b_dec=None, activation_function=act_fn_empty, layer_idx=0,
+        activation_threshold=1e6,
+    )
+    sparse_empty, enc_empty = transcoder_empty.encode_sparse(input_acts)
+    assert enc_empty.shape == (0, d_model)
+
+
 def test_relp_attribution():
     """End-to-end test: RelP attribution produces a valid graph.
 

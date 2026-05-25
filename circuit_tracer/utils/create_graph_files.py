@@ -29,9 +29,9 @@ def create_nodes(graph, node_mask, tokenizer, cumulative_scores):
     nodes = {}
 
     n_features = len(graph.selected_features)
-    layers = graph.cfg.n_layers
-    error_end_idx = n_features + graph.n_pos * layers  # type: ignore
+    error_end_idx = n_features + graph.n_error_nodes
     token_end_idx = error_end_idx + len(graph.input_tokens)
+    layers = graph.cfg.n_layers
 
     for node_idx in node_mask.nonzero().squeeze().tolist():
         if node_idx in range(n_features):

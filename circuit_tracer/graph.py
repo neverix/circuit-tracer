@@ -74,6 +74,14 @@ class Graph:
         self.scan = scan
         self.selected_features = selected_features
         self.activation_values = activation_values
+        # Default: n_layers * n_pos error nodes. Set to 0 for error-free graphs.
+        self._n_error_nodes = None
+
+    @property
+    def n_error_nodes(self):
+        if self._n_error_nodes is not None:
+            return self._n_error_nodes
+        return self.n_pos * self.cfg.n_layers
 
     def to(self, device):
         """Send all relevant tensors to the device (cpu, cuda, etc.)
@@ -103,6 +111,7 @@ class Graph:
             "selected_features": self.selected_features,
             "activation_values": self.activation_values,
             "scan": self.scan,
+            "_n_error_nodes": self._n_error_nodes,
         }
         torch.save(d, path)
 
@@ -119,12 +128,17 @@ class Graph:
             Graph: the Graph saved at the specified path
         """
         d = torch.load(path, weights_only=False, map_location=map_location)
-        return Graph(**d)
+        n_error_nodes = d.pop("_n_error_nodes", None)
+        g = Graph(**d)
+        g._n_error_nodes = n_error_nodes
+        return g
 
 
 def normalize_matrix(matrix: torch.Tensor) -> torch.Tensor:
     normalized = matrix.abs()
-    return normalized / normalized.sum(dim=1, keepdim=True).clamp(min=1e-10)
+    row_sums = normalized.sum(dim=1, keepdim=True).clamp_(min=1e-10)
+    normalized.div_(row_sums)
+    return normalized
 
 
 def compute_influence(A: torch.Tensor, logit_weights: torch.Tensor, max_iter: int = 1000):
@@ -293,7 +307,7 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     n_tokens = len(graph.input_tokens)
     n_features = len(graph.selected_features)
     error_start = n_features
-    error_end = error_start + n_tokens * graph.cfg.n_layers  # type: ignore
+    error_end = error_start + graph.n_error_nodes
     token_end = error_end + n_tokens
 
     logit_weights = torch.zeros(

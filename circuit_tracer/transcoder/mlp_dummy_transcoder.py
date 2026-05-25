@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from circuit_tracer.utils import get_default_device
-from .activation_functions import GatedActivationFunction
+from .activation_functions import GatedActivationFunction, _is_gelu_tanh, _is_silu
 
 
 class MLPDummyTranscoder(nn.Module):
@@ -131,21 +131,71 @@ class MLPDummyTranscoder(nn.Module):
         pos_idx, feat_idx = sparse_acts.indices()
 
         if isinstance(self.activation_function, GatedActivationFunction) and self.activation_function.relp:
-            # Encoder vectors via autograd through GatedActivationFunction,
-            # which applies frozen activation + HalfRule in its backward pass.
-            with torch.enable_grad():
-                x = input_acts.detach().requires_grad_(True)
-                pre = F.linear(x, W_enc, self.b_enc)
-                self.activation_function.set_original_inputs(x)
-                acts_grad = self.activation_function(pre)
-                active_encoders = torch.stack([
-                    torch.autograd.grad(acts_grad[p, s], x, retain_graph=True)[0][p]
-                    for p, s in zip(pos_idx, feat_idx)
-                ]) if len(pos_idx) > 0 else torch.empty(0, self.d_model)
+            if len(pos_idx) > 0:
+                active_encoders = self._compute_relp_encoders_analytic(
+                    input_acts, pos_idx, feat_idx
+                )
+            else:
+                active_encoders = torch.empty(0, self.d_model, device=input_acts.device)
         else:
             active_encoders = W_enc[feat_idx]
 
         return sparse_acts, active_encoders
+
+    def _compute_relp_encoders_analytic(self, input_acts, pos_idx, feat_idx):
+        """Analytic RelP encoder vectors for gated MLPs.
+
+        For neuron s at position p:
+            enc = gate_act[p,s] * W_up[s] + up_val[p,s] * frozen_deriv[p,s] * W_gate[s]
+        With half_rule, multiply by 0.5.
+        """
+        act_fn = self.activation_function
+        W_up = self.W_enc       # [d_mlp, d_model]
+        W_gate = act_fn.W_gate  # [d_mlp, d_model]
+
+        # Pre-activations (full matrices, then gather active)
+        gate_pre = F.linear(input_acts, W_gate)            # [n_pos, d_mlp]
+        up_pre = F.linear(input_acts, W_up, self.b_enc)    # [n_pos, d_mlp]
+
+        gate_pre_active = gate_pre[pos_idx, feat_idx]      # [n_active]
+        up_vals_active = up_pre[pos_idx, feat_idx]          # [n_active]
+
+        # Frozen activation value and derivative
+        if _is_gelu_tanh(act_fn.act_fn):
+            z = gate_pre_active
+            frozen_deriv = 0.5 * (1.0 + torch.tanh(
+                0.7978845608028654 * (z + 0.044715 * z**3)
+            ))
+            gate_act_active = z * frozen_deriv  # GELU(z) = z * gate
+        elif _is_silu(act_fn.act_fn):
+            frozen_deriv = torch.sigmoid(gate_pre_active)
+            gate_act_active = gate_pre_active * frozen_deriv  # SiLU(z) = z * sigmoid(z)
+        else:
+            raise ValueError(f"Unsupported activation for analytic RelP: {type(act_fn.act_fn)}")
+
+        active_encoders = (
+            gate_act_active.unsqueeze(-1) * W_up[feat_idx]
+            + (up_vals_active * frozen_deriv).unsqueeze(-1) * W_gate[feat_idx]
+        )
+
+        if act_fn.half_rule:
+            active_encoders = active_encoders * 0.5
+
+        return active_encoders
+
+    def _compute_relp_encoders_autograd(self, input_acts, pos_idx, feat_idx):
+        """RelP encoder vectors via per-feature autograd (slow, for testing only)."""
+        W_enc = self.W_enc
+        with torch.enable_grad():
+            x = input_acts.detach().requires_grad_(True)
+            pre = F.linear(x, W_enc, self.b_enc)
+            self.activation_function.set_original_inputs(x)
+            acts_grad = self.activation_function(pre)
+            active_encoders = torch.stack([
+                torch.autograd.grad(acts_grad[p, s], x, retain_graph=True)[0][p]
+                for p, s in zip(pos_idx, feat_idx)
+            ]) if len(pos_idx) > 0 else torch.empty(0, self.d_model)
+        return active_encoders
 
     def decode_sparse(self, sparse_acts):
         """Decode sparse activations and return reconstruction with scaled decoder vectors.
