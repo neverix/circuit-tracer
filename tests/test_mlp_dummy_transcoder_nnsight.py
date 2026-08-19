@@ -233,3 +233,26 @@ def test_nnsight_mlp_get_activations():
 
     finally:
         tokenizer_class.all_special_ids = original_all_special_ids  # type: ignore
+
+
+def test_nnsight_mlp_dummy_transcoder_gpt_oss_unsupported():
+    """GPT-OSS has MoE MLPs (no up_proj); the dummy-MLP path must fail clearly."""
+    from transformers import GptOssConfig
+
+    config = GptOssConfig(
+        hidden_size=32,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        num_local_experts=4,
+        num_experts_per_tok=2,
+        vocab_size=512,
+        layer_types=["sliding_attention", "full_attention"],
+    )
+    config._name_or_path = "openai-community/gpt2"
+    config.architectures = ["GptOssForCausalLM"]
+
+    with pytest.raises(NotImplementedError, match="MoE"):
+        ReplacementModel.from_config(config, MLP_NO_THRESHOLD, backend="nnsight")

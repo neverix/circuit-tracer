@@ -192,6 +192,12 @@ class NNSightReplacementModel(LanguageModel):
         transcoders = {}
         for layer in range(self.cfg.n_layers):
             mlp: nn.Module = self._resolve_attr(self, nnsight_config.mlp.format(layer=layer))  # type: ignore
+            if not hasattr(mlp, 'up_proj'):
+                raise NotImplementedError(
+                    f"MLP dummy transcoders require a dense MLP with up_proj/down_proj; "
+                    f"{type(mlp).__name__} at layer {layer} has none (MoE models such as "
+                    f"GPT-OSS are not supported yet)"
+                )
             W_enc: torch.Tensor = mlp.up_proj.weight  # type: ignore
             # Transpose to get (d_mlp, d_model) to match SingleLayerTranscoder convention
             W_dec: torch.Tensor = mlp.down_proj.weight.T  # type: ignore
