@@ -39,6 +39,7 @@ class MLPDummyTranscoder(nn.Module):
         activation_function: nn.Module,
         layer_idx: int,
         activation_threshold: float | None = None,
+        activation_topk: int | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ):
@@ -56,6 +57,7 @@ class MLPDummyTranscoder(nn.Module):
         self.layer_idx = layer_idx
         self.activation_function: nn.Module = activation_function
         self.activation_threshold = activation_threshold
+        self.activation_topk = activation_topk
 
     @property
     def device(self):
@@ -71,6 +73,21 @@ class MLPDummyTranscoder(nn.Module):
         to_read = feat_ids if feat_ids is not None else np.s_[:]
         return self.W_dec[to_read].to(self.dtype)
 
+    def _threshold_activations(self, acts):
+        """Sparsify post-activation values for candidate selection.
+
+        activation_threshold zeroes |acts| <= threshold (absolute units);
+        activation_topk keeps values with |acts| >= the k-th largest |acts|
+        per position (ties inclusive). If both are set, the threshold applies
+        first and top-k selects among the survivors.
+        """
+        if self.activation_threshold is not None:
+            acts = acts * (acts.abs() > self.activation_threshold)
+        if self.activation_topk is not None and self.activation_topk < acts.shape[-1]:
+            kth_largest = acts.abs().topk(self.activation_topk, dim=-1).values[..., -1:]
+            acts = acts * (acts.abs() >= kth_largest)
+        return acts
+
     def encode(self, input_acts, apply_activation_function: bool = True):
         W_enc = self.W_enc
         pre_acts = F.linear(input_acts.to(W_enc.dtype), W_enc, self.b_enc)
@@ -79,10 +96,8 @@ class MLPDummyTranscoder(nn.Module):
 
         if not apply_activation_function:
             return pre_acts
-        acts = self.activation_function(pre_acts) 
-        if self.activation_threshold is not None:
-            acts = acts * (acts.abs() > self.activation_threshold)
-        return acts
+        acts = self.activation_function(pre_acts)
+        return self._threshold_activations(acts)
 
     def decode(self, acts):
         # W_dec is (d_transcoder, d_model), acts is (n_pos, d_transcoder)
@@ -105,9 +120,11 @@ class MLPDummyTranscoder(nn.Module):
     def encode_sparse(self, input_acts, zero_positions: slice = slice(0, 1)):
         """Encode and return sparse activations with active encoder vectors.
 
-        With relp=True on the activation function, encoder vectors are computed
-        via autograd through GatedActivationFunction, which uses frozen activation
-        derivatives and HalfRule (RelP, https://arxiv.org/abs/2508.21258).
+        Without relp, the encoder vector of a feature is its (input-independent)
+        W_enc row. With relp=True on the activation function, encoder vectors are
+        the input-dependent frozen-derivative Jacobian rows of RelP
+        (https://arxiv.org/abs/2508.21258), computed in closed form per active
+        feature by _compute_relp_encoders_analytic.
 
         Args:
             input_acts: Input activations
@@ -122,8 +139,7 @@ class MLPDummyTranscoder(nn.Module):
         if isinstance(self.activation_function, GatedActivationFunction):
             self.activation_function.set_original_inputs(input_acts)
         acts = self.activation_function(pre_acts)
-        if self.activation_threshold is not None:
-            acts = acts * (acts.abs() > self.activation_threshold)
+        acts = self._threshold_activations(acts)
 
         acts[zero_positions] = 0
 
@@ -148,6 +164,9 @@ class MLPDummyTranscoder(nn.Module):
         For neuron s at position p:
             enc = gate_act[p,s] * W_up[s] + up_val[p,s] * frozen_deriv[p,s] * W_gate[s]
         With half_rule, multiply by 0.5.
+
+        This is the closed form of _compute_relp_encoders_autograd (kept as the
+        test oracle), which needs one backward pass per active feature.
         """
         act_fn = self.activation_function
         assert isinstance(act_fn, GatedActivationFunction)
@@ -290,11 +309,9 @@ class MLPDummyTranscoderSet(nn.Module):
         return iter(self.transcoders)  # type: ignore
 
     def apply_activation_function(self, layer_id, features):
-        acts = self.transcoders[layer_id].activation_function(features)  # type: ignore
-        threshold = self.transcoders[layer_id].activation_threshold
-        if threshold is not None:
-            acts = acts * (acts.abs() > threshold)
-        return acts
+        transcoder = self.transcoders[layer_id]
+        acts = transcoder.activation_function(features)  # type: ignore
+        return transcoder._threshold_activations(acts)  # type: ignore
 
     def compute_skip(self, layer_id: int, inputs):
         return self.transcoders[layer_id].compute_skip(inputs)  # type: ignore

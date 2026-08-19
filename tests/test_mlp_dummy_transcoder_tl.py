@@ -258,3 +258,37 @@ def test_tl_mlp_get_activations(family):
 
     assert torch.allclose(activation_cache, tl_activation_cache)
     assert torch.allclose(pre_activation_cache, tl_pre_activation_cache)
+
+
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_tl_mlp_dummy_transcoder_activation_topk(family):
+    """activation_topk keeps exactly the k largest-|a| neurons per position (TL backend)."""
+    k = 4
+    cfg = CONFIG_FACTORIES[family]()
+    model = ReplacementModel.from_config(
+        cfg,
+        MLPTranscoderConfig(activation_threshold=None, activation_topk=k),
+        backend="transformerlens",
+    )
+    assert isinstance(model, TransformerLensReplacementModel)
+    transcoder = model.transcoders[0]
+    assert transcoder.activation_topk == k
+
+    torch.manual_seed(0)
+    test_input = torch.randn(5, cfg.d_model, dtype=torch.float32, device=get_default_device())
+
+    with torch.no_grad():
+        gated = transcoder.encode(test_input)
+        transcoder.activation_topk = None
+        ungated = transcoder.encode(test_input)
+        transcoder.activation_topk = k
+
+    # exactly k survivors per position (random floats: no |a| ties), values untouched
+    assert ((gated != 0).sum(dim=-1) == k).all()
+    survivor_mask = gated != 0
+    assert torch.equal(gated[survivor_mask], ungated[survivor_mask])
+    # every survivor is at least as large in |a| as every casualty
+    inf = torch.tensor(torch.inf, device=gated.device)
+    min_kept = torch.where(survivor_mask, gated.abs(), inf).amin(dim=-1)
+    max_dropped = torch.where(survivor_mask, -inf, ungated.abs()).amax(dim=-1)
+    assert (max_dropped <= min_kept).all()

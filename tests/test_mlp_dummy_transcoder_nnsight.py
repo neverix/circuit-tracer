@@ -13,6 +13,7 @@ from circuit_tracer.replacement_model.replacement_model_nnsight import (
 from circuit_tracer import ReplacementModel
 from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.transcoder import MLPDummyTranscoderSet
+from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPDummyTranscoder
 from circuit_tracer.utils.tl_nnsight_mapping import get_mapping
 
 
@@ -343,3 +344,122 @@ def test_nnsight_mlp_dummy_transcoder_gpt_oss_unsupported():
 
     with pytest.raises(NotImplementedError, match="MoE"):
         ReplacementModel.from_config(config, MLP_NO_THRESHOLD, backend="nnsight")
+
+
+def test_activation_topk_hand_computed():
+    """activation_topk on hand-picked activations, expected output as literals."""
+    from torch import nn
+
+    transcoder = MLPDummyTranscoder(
+        W_enc=torch.eye(6),
+        b_enc=None,
+        W_dec=torch.zeros(6, 6),
+        b_dec=None,
+        activation_function=nn.Identity(),
+        layer_idx=0,
+        activation_topk=3,
+    )
+    x = torch.tensor([[3.0, -1.0, 0.5, 2.0, -4.0, 0.1]])
+    assert torch.equal(transcoder.encode(x), torch.tensor([[3.0, 0.0, 0.0, 2.0, -4.0, 0.0]]))
+
+    # threshold kills |a| <= 1.5 -> {-1.0, 0.5, 0.1}; top-2 of the survivors {3, 2, -4}
+    transcoder.activation_threshold = 1.5
+    transcoder.activation_topk = 2
+    assert torch.equal(transcoder.encode(x), torch.tensor([[3.0, 0.0, 0.0, 0.0, -4.0, 0.0]]))
+
+    # k >= d_transcoder is a no-op
+    transcoder.activation_threshold = None
+    transcoder.activation_topk = 6
+    assert torch.equal(transcoder.encode(x), x)
+
+
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_nnsight_mlp_dummy_transcoder_activation_topk(family):
+    """activation_topk keeps the k largest-|a| neurons per position, values
+    untouched; encode, encode_sparse and the set-level gate agree."""
+    k = 4
+    config = CONFIG_FACTORIES[family]()
+    text_config = config.get_text_config()
+
+    model = ReplacementModel.from_config(
+        config,
+        MLPTranscoderConfig(activation_threshold=None, activation_topk=k),
+        backend="nnsight",
+    )
+    assert isinstance(model, NNSightReplacementModel)
+    model.tokenizer.pad_token = model.tokenizer.eos_token
+
+    transcoders = _unwrap_transcoders(model)
+    assert isinstance(transcoders, MLPDummyTranscoderSet)
+    transcoder = transcoders[0]
+    assert transcoder.activation_topk == k
+
+    torch.manual_seed(0)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
+
+    with torch.no_grad():
+        gated = transcoder.encode(test_input)
+        transcoder.activation_topk = None
+        ungated = transcoder.encode(test_input)
+        transcoder.activation_topk = k
+
+        # exactly k survivors per position (random floats: no |a| ties)
+        assert ((gated != 0).sum(dim=-1) == k).all()
+        # survivors keep their original values
+        survivor_mask = gated != 0
+        assert torch.equal(gated[survivor_mask], ungated[survivor_mask])
+        # every survivor is at least as large in |a| as every casualty
+        inf = torch.tensor(torch.inf, device=gated.device)
+        min_kept = torch.where(survivor_mask, gated.abs(), inf).amin(dim=-1)
+        max_dropped = torch.where(survivor_mask, -inf, ungated.abs()).amax(dim=-1)
+        assert (max_dropped <= min_kept).all()
+
+        # encode_sparse applies the same gate
+        sparse_acts, _ = transcoder.encode_sparse(test_input, zero_positions=slice(0, 1))
+        gated_zeroed = gated.clone()
+        gated_zeroed[0] = 0
+        assert torch.allclose(sparse_acts.to_dense(), gated_zeroed, atol=1e-6)
+
+        # set-level apply_activation_function applies the same gate
+        pre_acts = transcoder.encode(test_input, apply_activation_function=False)
+        set_gated = transcoders.apply_activation_function(0, pre_acts)
+        assert torch.equal(set_gated, gated)
+
+
+def test_nnsight_mlp_dummy_transcoder_topk_composes_with_threshold():
+    """With both set, the threshold applies first and top-k selects among survivors."""
+    k = 8
+    threshold = 0.25
+    config = create_small_llama_config()
+    text_config = config.get_text_config()
+
+    model = ReplacementModel.from_config(
+        config,
+        MLPTranscoderConfig(activation_threshold=threshold, activation_topk=k),
+        backend="nnsight",
+    )
+    assert isinstance(model, NNSightReplacementModel)
+    transcoder = _unwrap_transcoders(model)[0]
+
+    torch.manual_seed(0)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
+
+    with torch.no_grad():
+        gated = transcoder.encode(test_input)
+        transcoder.activation_threshold = None
+        transcoder.activation_topk = None
+        raw = transcoder.encode(test_input)
+        transcoder.activation_threshold = threshold
+        transcoder.activation_topk = k
+
+    # every survivor cleared the threshold and kept its value
+    survivor_mask = gated != 0
+    assert ((gated != 0).sum(dim=-1) <= k).all()
+    assert (gated[survivor_mask].abs() > threshold).all()
+    assert torch.equal(gated[survivor_mask], raw[survivor_mask])
+    # no dropped above-threshold value out-ranks a survivor
+    inf = torch.tensor(torch.inf, device=gated.device)
+    min_kept = torch.where(survivor_mask, gated.abs(), inf).amin(dim=-1)
+    dropped_abs = torch.where(survivor_mask, -inf, raw.abs())
+    dropped_abs = torch.where(dropped_abs > threshold, dropped_abs, -inf)
+    assert (dropped_abs.amax(dim=-1) <= min_kept).all()

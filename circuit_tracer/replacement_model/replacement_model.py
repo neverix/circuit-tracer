@@ -22,6 +22,9 @@ class MLPTranscoderConfig(NamedTuple):
     # HalfRule correction for bilinear double-counting (gate*up).
     # None = follows relp setting; explicit True/False overrides.
     half_rule: bool | None = None
+    # Keep only the top-k |activations| per position as feature candidates.
+    # Composes with activation_threshold (threshold applies first).
+    activation_topk: int | None = None
 
 
 
