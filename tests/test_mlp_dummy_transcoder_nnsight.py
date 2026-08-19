@@ -4,7 +4,7 @@ import gc
 
 import pytest
 import torch
-from transformers import Gemma2Config
+from transformers import Gemma2Config, Gemma3Config, Gemma3TextConfig, LlamaConfig, Qwen3Config
 from nnsight import save
 
 from circuit_tracer.replacement_model.replacement_model_nnsight import (
@@ -13,6 +13,7 @@ from circuit_tracer.replacement_model.replacement_model_nnsight import (
 from circuit_tracer import ReplacementModel
 from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.transcoder import MLPDummyTranscoderSet
+from circuit_tracer.utils.tl_nnsight_mapping import get_mapping
 
 
 gemma_2_config_dict = {
@@ -50,6 +51,17 @@ gemma_2_config_dict = {
 # Disable the activation threshold for tests.
 MLP_NO_THRESHOLD = MLPTranscoderConfig(activation_threshold=None)
 
+# Shared tiny dimensions for all model families.
+TINY_DIMS = {
+    "hidden_size": 8,
+    "intermediate_size": 16,
+    "num_hidden_layers": 2,
+    "num_attention_heads": 2,
+    "num_key_value_heads": 2,
+    "head_dim": 4,
+    "vocab_size": 16,
+}
+
 
 @pytest.fixture(autouse=True)
 def cleanup_cuda():
@@ -58,8 +70,8 @@ def cleanup_cuda():
     gc.collect()
 
 
-def create_small_gemma_config():
-    """Create a small Gemma config for NNSight testing."""
+def create_small_gemma2_config():
+    """Create a small Gemma 2 config for NNSight testing."""
     config = Gemma2Config.from_dict(gemma_2_config_dict)
     config.num_hidden_layers = 2
     config.hidden_size = 8
@@ -73,28 +85,92 @@ def create_small_gemma_config():
     return config
 
 
+def create_small_gemma3_config():
+    """Create a small Gemma 3 (text-only) config for NNSight testing."""
+    config = Gemma3TextConfig(**TINY_DIMS)
+    config._name_or_path = "openai-community/gpt2"
+    config.architectures = ["Gemma3ForCausalLM"]
+    return config
+
+
+def create_small_gemma3_conditional_config():
+    """Create a small Gemma 3 multimodal config for NNSight testing."""
+    vision_config = {
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "image_size": 14,
+        "patch_size": 14,
+        "num_channels": 3,
+    }
+    config = Gemma3Config(
+        text_config=dict(TINY_DIMS), vision_config=vision_config, mm_tokens_per_image=1
+    )
+    config._name_or_path = "openai-community/gpt2"
+    config.architectures = ["Gemma3ForConditionalGeneration"]
+    return config
+
+
+def create_small_llama_config():
+    """Create a small Llama config for NNSight testing."""
+    config = LlamaConfig(**TINY_DIMS)
+    config._name_or_path = "openai-community/gpt2"
+    config.architectures = ["LlamaForCausalLM"]
+    return config
+
+
+def create_small_qwen3_config():
+    """Create a small Qwen 3 config for NNSight testing."""
+    config = Qwen3Config(**TINY_DIMS)
+    config._name_or_path = "openai-community/gpt2"
+    config.architectures = ["Qwen3ForCausalLM"]
+    return config
+
+
+CONFIG_FACTORIES = {
+    "gemma2": create_small_gemma2_config,
+    "gemma3": create_small_gemma3_config,
+    "gemma3-vlm": create_small_gemma3_conditional_config,
+    "llama": create_small_llama_config,
+    "qwen3": create_small_qwen3_config,
+}
+
+MODEL_FAMILIES = list(CONFIG_FACTORIES)
+
+
 def _unwrap_transcoders(model):
     """Unwrap NNSight Envoy to get the actual MLPDummyTranscoderSet."""
     return model.transcoders._module if hasattr(model.transcoders, '_module') else model.transcoders
 
 
-def test_nnsight_mlp_dummy_transcoder_output_matches_mlp():
+def _get_mlp(model, layer: int):
+    """Resolve the layer's MLP module via the architecture mapping.
+
+    Works both outside and inside a trace context (Envoy attribute chains),
+    and handles the nested language tower of Gemma3ForConditionalGeneration.
+    """
+    mapping = get_mapping(model.config.architectures[0])
+    return NNSightReplacementModel._resolve_attr(model, mapping.mlp.format(layer=layer))
+
+
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_nnsight_mlp_dummy_transcoder_output_matches_mlp(family):
     """Test that MLPDummyTranscoder produces the same output as the original MLP."""
-    config = create_small_gemma_config()
+    config = CONFIG_FACTORIES[family]()
+    text_config = config.get_text_config()
 
     model = ReplacementModel.from_config(config, MLP_NO_THRESHOLD, backend="nnsight")
     assert isinstance(model, NNSightReplacementModel)
     model.tokenizer.pad_token = model.tokenizer.eos_token
 
-    from circuit_tracer.utils.tl_nnsight_mapping import get_mapping
-    nnsight_config = get_mapping(model.config.architectures[0])  # type: ignore
-    mlp = model._resolve_attr(model, nnsight_config.mlp.format(layer=0))
+    mlp = _get_mlp(model, 0)
     transcoders = _unwrap_transcoders(model)
     assert isinstance(transcoders, MLPDummyTranscoderSet)
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
-    test_input = torch.randn(3, config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(3, text_config.hidden_size, dtype=torch.float32)
 
     with torch.no_grad():
         gate_out = mlp.act_fn(mlp.gate_proj(test_input))  # type: ignore
@@ -108,9 +184,11 @@ def test_nnsight_mlp_dummy_transcoder_output_matches_mlp():
     assert torch.allclose(transcoder_encoded, hidden, atol=1e-5)
     assert torch.allclose(transcoder_output, mlp_output, atol=1e-5)
 
-def test_nnsight_mlp_dummy_transcoder_output_matches_mlp_trace():
+
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_nnsight_mlp_dummy_transcoder_output_matches_mlp_trace(family):
     """Test that MLPDummyTranscoder produces the same output as the original MLP."""
-    config = create_small_gemma_config()
+    config = CONFIG_FACTORIES[family]()
 
     model = ReplacementModel.from_config(config, MLP_NO_THRESHOLD, backend="nnsight")
     assert isinstance(model, NNSightReplacementModel)
@@ -124,9 +202,10 @@ def test_nnsight_mlp_dummy_transcoder_output_matches_mlp_trace():
 
     with torch.no_grad():
         with model.trace([0, 3, 6, 2, 6, 7]):
-            mlp_input = save(model.model.layers[0].mlp.input)
-            hidden = save(model.model.layers[0].mlp.down_proj.input)
-            mlp_output = save(model.model.layers[0].mlp.output)
+            mlp = _get_mlp(model, 0)
+            mlp_input = save(mlp.input)
+            hidden = save(mlp.down_proj.input)
+            mlp_output = save(mlp.output)
 
         transcoder_encoded = transcoder.encode(mlp_input)
         transcoder_output = transcoder.decode(transcoder_encoded)
@@ -135,9 +214,11 @@ def test_nnsight_mlp_dummy_transcoder_output_matches_mlp_trace():
     assert torch.allclose(transcoder_output, mlp_output, atol=1e-5)
 
 
-def test_nnsight_mlp_dummy_transcoder_encode_sparse():
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_nnsight_mlp_dummy_transcoder_encode_sparse(family):
     """Test that encode_sparse produces correct sparse activations."""
-    config = create_small_gemma_config()
+    config = CONFIG_FACTORIES[family]()
+    text_config = config.get_text_config()
 
     model = ReplacementModel.from_config(config, MLP_NO_THRESHOLD, backend="nnsight")
     assert isinstance(model, NNSightReplacementModel)
@@ -148,7 +229,7 @@ def test_nnsight_mlp_dummy_transcoder_encode_sparse():
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
-    test_input = torch.randn(5, config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
 
     with torch.no_grad():
         dense_acts = transcoder.encode(test_input)
@@ -161,9 +242,11 @@ def test_nnsight_mlp_dummy_transcoder_encode_sparse():
     assert torch.allclose(sparse_dense, dense_acts_zeroed, atol=1e-5)
 
 
-def test_nnsight_mlp_dummy_transcoder_decode_sparse():
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_nnsight_mlp_dummy_transcoder_decode_sparse(family):
     """Test that decode_sparse produces correct reconstruction."""
-    config = create_small_gemma_config()
+    config = CONFIG_FACTORIES[family]()
+    text_config = config.get_text_config()
 
     model = ReplacementModel.from_config(config, MLP_NO_THRESHOLD, backend="nnsight")
     assert isinstance(model, NNSightReplacementModel)
@@ -174,7 +257,7 @@ def test_nnsight_mlp_dummy_transcoder_decode_sparse():
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
-    test_input = torch.randn(5, config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
 
     with torch.no_grad():
         sparse_acts, _ = transcoder.encode_sparse(test_input, zero_positions=slice(0, 1))
@@ -187,9 +270,12 @@ def test_nnsight_mlp_dummy_transcoder_decode_sparse():
     assert torch.allclose(reconstruction, direct_decode, atol=1e-5)
 
 
-def test_nnsight_mlp_get_activations():
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_nnsight_mlp_get_activations(family):
     """Test that get_activations works correctly with MLP transcoders."""
-    config = create_small_gemma_config()
+    config = CONFIG_FACTORIES[family]()
+    text_config = config.get_text_config()
+
     model = ReplacementModel.from_config(config, MLP_NO_THRESHOLD, backend="nnsight")
     assert isinstance(model, NNSightReplacementModel)
     model.tokenizer.pad_token = model.tokenizer.eos_token
@@ -205,11 +291,11 @@ def test_nnsight_mlp_get_activations():
 
         assert logits.shape[0] == 1
         assert logits.shape[1] == len(s)
-        assert logits.shape[2] == config.vocab_size
+        assert logits.shape[2] == text_config.vocab_size
 
-        assert activation_cache.shape[0] == config.num_hidden_layers
+        assert activation_cache.shape[0] == text_config.num_hidden_layers
         assert activation_cache.shape[1] == len(s)
-        assert activation_cache.shape[2] == config.intermediate_size
+        assert activation_cache.shape[2] == text_config.intermediate_size
 
         assert not torch.isnan(activation_cache).any()
         assert not torch.isinf(activation_cache).any()
@@ -218,8 +304,9 @@ def test_nnsight_mlp_get_activations():
         traced_cache, pre_act_traced_cache = [], []
         with model.trace(s):
             for layer in range(model.cfg.n_layers):
-                pre_act_traced_cache.append(save(model.model.layers[layer].mlp.up_proj.output.squeeze(0)))
-                traced_cache.append(save(model.model.layers[layer].mlp.down_proj.input.squeeze(0)))
+                mlp = _get_mlp(model, layer)
+                pre_act_traced_cache.append(save(mlp.up_proj.output.squeeze(0)))
+                traced_cache.append(save(mlp.down_proj.input.squeeze(0)))
 
         traced_cache = torch.stack(traced_cache)
         pre_act_traced_cache = torch.stack(pre_act_traced_cache)

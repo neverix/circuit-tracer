@@ -26,8 +26,8 @@ def cleanup_cuda():
     gc.collect()
 
 
-def create_small_tl_config():
-    """Create a small TransformerLens config for testing."""
+def create_small_gemma2_tl_config():
+    """Small Gemma-2-shaped config: gated GELU(tanh) MLP, pre+post norms, softcaps."""
     return HookedTransformerConfig.from_dict({
         "n_layers": 2,
         "d_model": 8,
@@ -67,9 +67,87 @@ def create_small_tl_config():
     })
 
 
-def test_tl_mlp_dummy_transcoder_output_matches_mlp():
+def create_small_llama_tl_config():
+    """Small Llama-shaped config: gated SiLU MLP, RMSNorm, rotary."""
+    return HookedTransformerConfig.from_dict({
+        "n_layers": 2,
+        "d_model": 8,
+        "n_ctx": 64,
+        "d_head": 4,
+        "model_name": "llama-3.1-8b",
+        "n_heads": 2,
+        "d_mlp": 16,
+        "act_fn": "silu",
+        "d_vocab": 16,
+        "eps": 1e-06,
+        "use_attn_result": False,
+        "use_attn_scale": True,
+        "original_architecture": "LlamaForCausalLM",
+        "tokenizer_name": "gpt2",
+        "normalization_type": "RMSPre",
+        "device": get_default_device(),
+        "attention_dir": "causal",
+        "positional_embedding_type": "rotary",
+        "final_rms": True,
+        "d_vocab_out": 16,
+        "rotary_dim": 4,
+        "gated_mlp": True,
+        "default_prepend_bos": True,
+        "dtype": torch.float32,
+        "tokenizer_prepends_bos": True,
+        "n_key_value_heads": 2,
+        "rotary_base": 10000.0,
+    })
+
+
+def create_small_qwen3_tl_config():
+    """Small Qwen-3-shaped config: gated SiLU MLP, RMSNorm, QK-norm."""
+    config_dict = {
+        "n_layers": 2,
+        "d_model": 8,
+        "n_ctx": 64,
+        "d_head": 4,
+        "model_name": "qwen3-0.6b",
+        "n_heads": 2,
+        "d_mlp": 16,
+        "act_fn": "silu",
+        "d_vocab": 16,
+        "eps": 1e-06,
+        "use_attn_result": False,
+        "use_attn_scale": True,
+        "original_architecture": "Qwen3ForCausalLM",
+        "tokenizer_name": "gpt2",
+        "normalization_type": "RMSPre",
+        "device": get_default_device(),
+        "attention_dir": "causal",
+        "positional_embedding_type": "rotary",
+        "final_rms": True,
+        "d_vocab_out": 16,
+        "rotary_dim": 4,
+        "gated_mlp": True,
+        "default_prepend_bos": True,
+        "dtype": torch.float32,
+        "tokenizer_prepends_bos": True,
+        "n_key_value_heads": 2,
+        "rotary_base": 10000.0,
+        "use_qk_norm": True,
+    }
+    return HookedTransformerConfig.from_dict(config_dict)
+
+
+CONFIG_FACTORIES = {
+    "gemma2": create_small_gemma2_tl_config,
+    "llama": create_small_llama_tl_config,
+    "qwen3": create_small_qwen3_tl_config,
+}
+
+MODEL_FAMILIES = list(CONFIG_FACTORIES)
+
+
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_tl_mlp_dummy_transcoder_output_matches_mlp(family):
     """Test that MLPDummyTranscoder produces the same output as the original MLP."""
-    cfg = create_small_tl_config()
+    cfg = CONFIG_FACTORIES[family]()
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
     assert isinstance(model.transcoders, MLPDummyTranscoderSet)
@@ -95,9 +173,10 @@ def test_tl_mlp_dummy_transcoder_output_matches_mlp():
     assert torch.allclose(transcoder_output, mlp_output, atol=1e-5)
 
 
-def test_tl_mlp_dummy_transcoder_encode_sparse():
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_tl_mlp_dummy_transcoder_encode_sparse(family):
     """Test that encode_sparse produces correct sparse activations."""
-    cfg = create_small_tl_config()
+    cfg = CONFIG_FACTORIES[family]()
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
     assert isinstance(model.transcoders, MLPDummyTranscoderSet)
@@ -118,9 +197,10 @@ def test_tl_mlp_dummy_transcoder_encode_sparse():
     assert torch.allclose(sparse_dense, dense_acts_zeroed, atol=1e-5)
 
 
-def test_tl_mlp_dummy_transcoder_decode_sparse():
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_tl_mlp_dummy_transcoder_decode_sparse(family):
     """Test that decode_sparse produces correct reconstruction."""
-    cfg = create_small_tl_config()
+    cfg = CONFIG_FACTORIES[family]()
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
     assert isinstance(model.transcoders, MLPDummyTranscoderSet)
@@ -141,9 +221,10 @@ def test_tl_mlp_dummy_transcoder_decode_sparse():
     assert torch.allclose(reconstruction, direct_decode, atol=1e-5)
 
 
-def test_tl_mlp_get_activations():
+@pytest.mark.parametrize("family", MODEL_FAMILIES)
+def test_tl_mlp_get_activations(family):
     """Test that get_activations works correctly with MLP transcoders."""
-    cfg = create_small_tl_config()
+    cfg = CONFIG_FACTORIES[family]()
     model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
     assert isinstance(model, TransformerLensReplacementModel)
 
