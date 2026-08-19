@@ -47,14 +47,14 @@ class MLPDummyTranscoder(nn.Module):
         if device is None:
             device = get_default_device()
 
-        self.W_enc = W_enc
+        self.W_enc: torch.Tensor = W_enc
         self.b_enc = b_enc
-        self.W_dec = W_dec
+        self.W_dec: torch.Tensor = W_dec
         self.b_dec = b_dec
         self.d_model = self.W_enc.size(1)
         self.d_transcoder = self.W_enc.size(0)
         self.layer_idx = layer_idx
-        self.activation_function = activation_function
+        self.activation_function: nn.Module = activation_function
         self.activation_threshold = activation_threshold
 
     @property
@@ -150,6 +150,7 @@ class MLPDummyTranscoder(nn.Module):
         With half_rule, multiply by 0.5.
         """
         act_fn = self.activation_function
+        assert isinstance(act_fn, GatedActivationFunction)
         W_up = self.W_enc       # [d_mlp, d_model]
         W_gate = act_fn.W_gate  # [d_mlp, d_model]
 
@@ -186,6 +187,7 @@ class MLPDummyTranscoder(nn.Module):
     def _compute_relp_encoders_autograd(self, input_acts, pos_idx, feat_idx):
         """RelP encoder vectors via per-feature autograd (slow, for testing only)."""
         W_enc = self.W_enc
+        assert isinstance(self.activation_function, GatedActivationFunction)
         with torch.enable_grad():
             x = input_acts.detach().requires_grad_(True)
             pre = F.linear(x, W_enc, self.b_enc)

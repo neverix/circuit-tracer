@@ -142,7 +142,7 @@ class GatedActivationFunction(nn.Module):
 
     def __init__(self, W_gate, act_fn, relp: bool = False, half_rule: bool | None = None):
         super().__init__()
-        self.W_gate = W_gate
+        self.W_gate: torch.Tensor = W_gate
         self.act_fn = act_fn
         self.relp = relp
         self.half_rule = relp if half_rule is None else half_rule
@@ -167,6 +167,7 @@ class GatedActivationFunction(nn.Module):
         assert self.original_inputs is not None
         gate_input = F.linear(self.original_inputs, self.W_gate)
         if self.relp:
+            assert self._frozen_act is not None
             gate = self._frozen_act(gate_input)
         else:
             gate = self.act_fn(gate_input)
