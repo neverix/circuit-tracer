@@ -73,9 +73,9 @@ class FrozenSiLU(torch.autograd.Function):
         return F.silu(x)
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx: Any, *grad_outputs: torch.Tensor) -> torch.Tensor:
         (sig,) = ctx.saved_tensors
-        return sig * grad_output
+        return sig * grad_outputs[0]
 
 
 class FrozenGELUTanh(torch.autograd.Function):
@@ -88,9 +88,9 @@ class FrozenGELUTanh(torch.autograd.Function):
         return x * gate
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx: Any, *grad_outputs: torch.Tensor) -> torch.Tensor:
         (gate,) = ctx.saved_tensors
-        return gate * grad_output
+        return gate * grad_outputs[0]
 
 
 class HalfRule(torch.autograd.Function):
@@ -101,8 +101,8 @@ class HalfRule(torch.autograd.Function):
         return x
 
     @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output / 2
+    def backward(ctx: Any, *grad_outputs: torch.Tensor) -> torch.Tensor:
+        return grad_outputs[0] / 2
 
 
 def _unwrap(act_fn):

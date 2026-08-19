@@ -212,7 +212,7 @@ def load_transcoders(
             activation_threshold = None
         return MLPTranscoderConfig(
             activation_threshold=activation_threshold,
-            scan=config["scan"],
+            scan_name=config.get("scan_name", config.get("scan")),
         )
     else:
         raise ValueError(f"Unknown model kind: {model_kind}")
