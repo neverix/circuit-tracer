@@ -339,12 +339,9 @@ def download_hf_uris(uris: Iterable[str], max_workers: int = 8) -> dict[str, str
     # below will use the cached files only and surface its own error if missing.
     if not os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
         for repo_id in unique_repos:
-            try:
-                if hf_api.repo_info(repo_id=repo_id, token=token).gated is not False:
-                    if token is None:
-                        raise PermissionError("Cannot access a gated repo without a hf token.")
-            except Exception as e:
-                logger.warning(f"Pre-flight check for {repo_id} failed ({e}); relying on cache.")
+            if hf_api.repo_info(repo_id=repo_id, token=token).gated is not False:
+                if token is None:
+                    raise PermissionError("Cannot access a gated repo without a hf token.")
 
     logger.info("Pre-flight check complete. Starting downloads...")
 
