@@ -3,7 +3,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import contextmanager
 from functools import partial
-from typing import Callable, Iterator, Literal
+from typing import Callable, Iterator, Literal, cast
 
 import torch
 from torch import nn
@@ -60,7 +60,7 @@ class NNSightReplacementModel(LanguageModel):
     embed_loc: nn.Module
     unembed_loc: nn.Module
     skip_transcoder: bool
-    scan: str | list[str] | None
+    scan_name: str | list[str] | None
     backend: Literal["nnsight"]
 
     @classmethod
@@ -185,7 +185,7 @@ class NNSightReplacementModel(LanguageModel):
         )
 
     def create_dummy_mlp_transcoders(
-        self, activation_threshold: float | None, scan: str | None = None,
+        self, activation_threshold: float | None, scan_name: str | None = None,
         relp: bool = False, half_rule: bool | None = None,
     ) -> MLPDummyTranscoderSet:
         nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
@@ -209,7 +209,7 @@ class NNSightReplacementModel(LanguageModel):
         return MLPDummyTranscoderSet(transcoders,
                                      feature_input_hook='mlp.hook_in',
                                      feature_output_hook='mlp.hook_out',
-                                     scan=scan)
+                                     scan_name=scan_name)
 
     @staticmethod
     def _resolve_attr(root: object, attr_path: str):
@@ -248,12 +248,16 @@ class NNSightReplacementModel(LanguageModel):
 
         if isinstance(transcoder_set, MLPTranscoderConfig):
             transcoders = self.create_dummy_mlp_transcoders(
-                transcoder_set.activation_threshold, scan=transcoder_set.scan,
+                transcoder_set.activation_threshold, scan_name=transcoder_set.scan_name,
                 relp=transcoder_set.relp, half_rule=transcoder_set.half_rule,
             )
         else:
             transcoders = transcoder_set
             transcoders.to(self.device, self.dtype)
+
+        # special case to zero out <bos><start_of_turn>user\n for gemmascope 2 (-it) transcoders
+        gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
+        self.zero_positions = slice(0, 4) if gemma_3_it else slice(0, 1)
 
         self.transcoders = transcoders
         self.skip_transcoder = transcoders.skip_connection
@@ -281,9 +285,13 @@ class NNSightReplacementModel(LanguageModel):
         self._embed_location = nnsight_config.embed_location
 
         # these are real weights, not envoys
-        self.embed_weight = self._resolve_attr(self, nnsight_config.embed_weight)
-        self.unembed_weight = self._resolve_attr(self, nnsight_config.unembed_weight)
-        self.scan = transcoders.scan
+        self.embed_weight = cast(
+            torch.Tensor, self._resolve_attr(self, nnsight_config.embed_weight)
+        )
+        self.unembed_weight = cast(
+            torch.Tensor, self._resolve_attr(self, nnsight_config.unembed_weight)
+        )
+        self.scan_name = transcoders.scan_name
 
         # Make sure the replacement model is entirely frozen by default.
         for param in self.parameters():
@@ -340,26 +348,6 @@ class NNSightReplacementModel(LanguageModel):
             activation_layers: Iterator[int] | None = None,
         ):
             # special case to zero out <bos><start_of_turn>user\n for gemmascope 2 (-it) transcoders
-            gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
-            overlap = 0
-            if gemma_3_it:
-                input_ids = self.input
-                ignore_prefix = torch.tensor(
-                    [2, 105, 2364, 107], dtype=input_ids.dtype, device=input_ids.device
-                )
-                min_len = min(len(input_ids), len(ignore_prefix))
-                if min_len == 0:
-                    overlap = 0
-                else:
-                    # Compare the overlapping portion
-                    matches = input_ids[:min_len] == ignore_prefix[:min_len]
-
-                    # Find the first False (mismatch)
-                    if matches.all():
-                        overlap = min_len
-                    else:
-                        overlap = matches.to(torch.int).argmin().item()
-
             layers = range(self.cfg.n_layers) if activation_layers is None else activation_layers
             for layer in layers:
                 feature_input_loc = self.get_feature_input_loc(layer)
@@ -374,9 +362,7 @@ class NNSightReplacementModel(LanguageModel):
                 )
 
                 if not (append and len(activation_matrix[layer]) > 0):  # type:ignore
-                    transcoder_acts[0] = 0
-                    if gemma_3_it:
-                        transcoder_acts[:overlap] = 0
+                    transcoder_acts[self.zero_positions] = 0
 
                 if sparse:
                     transcoder_acts = transcoder_acts.to_sparse()
@@ -399,7 +385,7 @@ class NNSightReplacementModel(LanguageModel):
             else:
                 if append:
                     activation_cache = torch.stack(
-                        [torch.cat(acts, dim=0) for acts in activation_matrix]
+                        [torch.cat(acts, dim=0) for acts in activation_matrix]  # type: ignore
                     )
                 else:
                     activation_cache = torch.stack(activation_matrix)  # type: ignore
@@ -494,9 +480,24 @@ class NNSightReplacementModel(LanguageModel):
         if tokens.ndim > 1:
             raise ValueError(f"Tensor must be 1-D, got shape {tokens.shape}")
 
+        tokens = tokens.to(self.device)
+
+        gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
+        if gemma_3_it:
+            ignore_prefix = torch.tensor(
+                [2, 105, 2364, 107], dtype=tokens.dtype, device=tokens.device
+            )
+            tokenization_error = (
+                "Input tokens should start with <bos><start_of_turn>user\n, but got {tokens}"
+            )
+            assert tokens.size(0) >= 4 and torch.all(tokens[:4] == ignore_prefix), (
+                tokenization_error.format(tokens=self.tokenizer.decode(tokens.cpu().tolist()))
+            )
+            return tokens
+
         # Check if a special token is already present at the beginning
         if tokens[0] in self.tokenizer.all_special_ids:
-            return tokens.to(self.device)
+            return tokens
 
         # Prepend a special token to avoid artifacts at position 0
         candidate_bos_token_ids = [
@@ -556,32 +557,14 @@ class NNSightReplacementModel(LanguageModel):
             mlp_out_cache = save(torch.cat(mlp_out_cache, dim=0))  # type: ignore
             logits = save(self.output.logits)
 
-        # special case to zero out <bos><start_of_turn>user\n for gemmascope 2 (-it) transcoders
-        gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
-        zero_positions = slice(0, 1)
-        if gemma_3_it:
-            ignore_prefix = torch.tensor(
-                [2, 105, 2364, 107], dtype=tokens.dtype, device=tokens.device
-            )
-            min_len = min(len(tokens), len(ignore_prefix))
-            if min_len == 0:
-                zero_positions = slice(0, 0)
-            else:
-                # Compare the overlapping portion
-                matches = tokens[:min_len] == ignore_prefix[:min_len]
-
-                # Find the first False (mismatch)
-                if matches.all():
-                    zero_positions = slice(0, min_len)
-                else:
-                    zero_positions = slice(0, matches.to(torch.int).argmin().item())
-
-        attribution_data = transcoders.compute_attribution_components(mlp_in_cache, zero_positions)  # type: ignore
+        attribution_data = transcoders.compute_attribution_components(
+            mlp_in_cache, self.zero_positions
+        )  # type: ignore
 
         # Compute error vectors
         error_vectors = mlp_out_cache - attribution_data["reconstruction"]
 
-        error_vectors[:, zero_positions] = 0
+        error_vectors[:, self.zero_positions] = 0
         token_vectors = self.embed_weight[  # type: ignore
             tokens
         ].detach()  # (n_pos, d_model)  # type: ignore
@@ -910,7 +893,7 @@ class NNSightReplacementModel(LanguageModel):
         sparse: bool = False,
         return_activations: bool = True,
         **kwargs,
-    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[str, torch.Tensor, torch.Tensor | None]:  # logits: (seq_len, vocab_size)
         """Given the input, and a dictionary of features to intervene on, performs the
         intervention, and generates a continuation, along with the logits and activations at each generation position.
         This function accepts all kwargs valid for HookedTransformer.generate(). Note that freeze_attention applies
@@ -921,13 +904,19 @@ class NNSightReplacementModel(LanguageModel):
         all tokens. Note that due to numerical precision issues, you are only guaranteed that the logits / activations of
         model.feature_intervention_generate(s, ...) are equivalent to model.feature_intervention(s, ...) if kv_cache is False.
 
+        .. note::
+            Unlike ``feature_intervention`` (which returns 3-D logits of shape
+            ``(batch, seq_len, vocab_size)``), this method returns **2-D** logits of shape
+            ``(seq_len, vocab_size)`` with no batch dimension, since generation is always
+            batch=1. This was changed in commit a1ca600.
+
         Args:
             input (_type_): the input prompt to intervene on
             interventions (list[tuple[int, Union[int, slice, torch.Tensor]], int,
                 int | torch.Tensor]): A list of interventions to perform, formatted as
                 a list of (layer, position, feature_idx, value)
             constrained_layers: (range | None = None): whether to freeze all MLPs/transcoders /
-                attn patterns / layernorm denominators. This will only apply to the very first token generated. If
+                attn patterns / layernorm denominators. This will only apply to the very first token generated.
             freeze_attention (bool): whether to freeze all attention patterns. Applies only to first token generated
             apply_activation_function (bool): whether to apply the activation function when
                 recording the activations to be returned. This is useful to set to False for
@@ -939,6 +928,10 @@ class NNSightReplacementModel(LanguageModel):
                 activation computation is skipped for layers not being intervened on (when
                 constrained_layers is not set), saving time. Returns None for activations.
                 Defaults to True.
+
+        Returns:
+            tuple[str, torch.Tensor, torch.Tensor | None]: A tuple of (generated_text,
+                logits, activations) where logits has shape ``(seq_len, vocab_size)`` (2-D).
         """
 
         # remove verbose kwarg, which is valid for TL models but not NNsight ones.

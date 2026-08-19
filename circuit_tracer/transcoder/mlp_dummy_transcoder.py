@@ -241,20 +241,20 @@ class MLPDummyTranscoderSet(nn.Module):
         d_transcoder: Common feature dimension across all transcoders
         feature_input_hook: Hook point where features read from (e.g., "hook_resid_mid")
         feature_output_hook: Hook point where features write to (e.g., "hook_mlp_out")
-        scan: Optional identifier to identify corresponding feature visualization
+        scan_name: Optional identifier to identify corresponding feature visualization
         skip_connection: Whether transcoders include learned skip connections
     """
     transcoders: nn.ModuleList
     n_layers: int
     d_transcoder: int
-    scan: str | list[str] | None
+    scan_name: str | list[str] | None
 
     def __init__(
         self,
         transcoders: dict[int, MLPDummyTranscoder],
         feature_input_hook: str,
         feature_output_hook: str,
-        scan: str | list[str] | None = None,
+        scan_name: str | list[str] | None = None,
     ):
         super().__init__()
         # Validate that we have continuous layers from 0 to max
@@ -277,7 +277,7 @@ class MLPDummyTranscoderSet(nn.Module):
         # Store hook configuration
         self.feature_input_hook = feature_input_hook
         self.feature_output_hook = feature_output_hook
-        self.scan = scan
+        self.scan_name = scan_name
         self.skip_connection = False
 
     def __len__(self):

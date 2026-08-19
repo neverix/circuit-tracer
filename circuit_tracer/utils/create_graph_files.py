@@ -1,17 +1,25 @@
+from __future__ import annotations
+
 import logging
 import os
 import time
+
 
 import torch
 from transformers import AutoTokenizer
 
 from circuit_tracer.frontend.graph_models import Metadata, Model, Node, QParams
 from circuit_tracer.frontend.utils import add_graph_metadata
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from circuit_tracer.graph import Graph
+
 
 logger = logging.getLogger(__name__)
 
 
-def load_graph_data(file_path):
+def load_graph_data(file_path) -> Graph:
     """Load graph data from a PyTorch file."""
     from circuit_tracer.graph import Graph
 
@@ -22,7 +30,7 @@ def load_graph_data(file_path):
     return graph
 
 
-def create_nodes(graph, node_mask, tokenizer, cumulative_scores):
+def create_nodes(graph: Graph, node_mask, tokenizer, cumulative_scores):
     """Create all nodes for the graph."""
     start_time = time.time()
 
@@ -53,10 +61,16 @@ def create_nodes(graph, node_mask, tokenizer, cumulative_scores):
             )
         elif node_idx in range(token_end_idx, len(cumulative_scores)):
             pos = node_idx - token_end_idx
+
+            # vocab_idx can be either a valid token_id (< vocab_size) or a virtual
+            # index (>= vocab_size) for arbitrary strings/functions thereof. The virtual indices
+            # encode the position in the logit_targets list as: vocab_size + position.
+            token, vocab_idx = graph.logit_targets[pos]
+
             nodes[node_idx] = Node.logit_node(
                 pos=graph.n_pos - 1,
-                vocab_idx=graph.logit_tokens[pos],
-                token=tokenizer.decode(graph.logit_tokens[pos]),
+                vocab_idx=vocab_idx,
+                token=token,
                 target_logit=pos == 0,
                 token_prob=graph.logit_probabilities[pos].item(),
                 num_layers=layers,
@@ -68,7 +82,7 @@ def create_nodes(graph, node_mask, tokenizer, cumulative_scores):
     return nodes
 
 
-def create_used_nodes_and_edges(graph, nodes, edge_mask):
+def create_used_nodes_and_edges(graph: Graph, nodes, edge_mask):
     """Filter to only used nodes and create edges."""
     start_time = time.time()
     edges = edge_mask.numpy()
@@ -102,21 +116,21 @@ def create_used_nodes_and_edges(graph, nodes, edge_mask):
     return used_nodes, used_edges
 
 
-def build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer):
+def build_model(graph: Graph, used_nodes, used_edges, slug, scan_name, node_threshold, tokenizer):
     """Build the full model object."""
     start_time = time.time()
 
-    if isinstance(scan, list):
-        transcoder_list = scan
+    if isinstance(scan_name, list):
+        transcoder_list = scan_name
         transcoder_list_str = "-".join(transcoder_list)
         transcoder_list_hash = hash(transcoder_list_str)
-        scan = "custom-" + str(transcoder_list_hash)
+        scan_name = "custom-" + str(transcoder_list_hash)
     else:
         transcoder_list = []
 
     meta = Metadata(
         slug=slug,
-        scan=scan,
+        scan=scan_name,
         transcoder_list=transcoder_list,
         prompt_tokens=[tokenizer.decode(t) for t in graph.input_tokens],
         prompt=graph.input_string,
@@ -145,13 +159,14 @@ def build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, token
 
 
 def create_graph_files(
-    graph_or_path,
+    graph_or_path: Graph | str,
     slug: str,
     output_path,
-    scan=None,
+    scan_name=None,
     node_threshold=0.8,
     edge_threshold=0.98,
 ):
+    # Import Graph/prune_graph locally to avoid circular import at module import time
     from circuit_tracer.graph import Graph, prune_graph
 
     total_start_time = time.time()
@@ -166,13 +181,13 @@ def create_graph_files(
     else:
         os.makedirs(output_path, exist_ok=True)
 
-    if scan is None:
-        if graph.scan is None:
+    if scan_name is None:
+        if graph.scan_name is None:
             raise ValueError(
-                "Neither scan nor graph.scan was set. One must be set to identify "
+                "Neither scan_name nor graph.scan_name was set. One must be set to identify "
                 "which transcoders were used when creating the graph."
             )
-        scan = graph.scan
+        scan_name = graph.scan_name
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     graph.to(device)
@@ -184,7 +199,7 @@ def create_graph_files(
     tokenizer = AutoTokenizer.from_pretrained(graph.cfg.tokenizer_name)
     nodes = create_nodes(graph, node_mask, tokenizer, cumulative_scores)
     used_nodes, used_edges = create_used_nodes_and_edges(graph, nodes, edge_mask)
-    model = build_model(graph, used_nodes, used_edges, slug, scan, node_threshold, tokenizer)
+    model = build_model(graph, used_nodes, used_edges, slug, scan_name, node_threshold, tokenizer)
 
     # Write the output locally
     with open(os.path.join(output_path, f"{slug}.json"), "w") as f:
