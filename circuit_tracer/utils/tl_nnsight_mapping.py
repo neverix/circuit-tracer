@@ -294,4 +294,19 @@ def convert_nnsight_config_to_transformerlens(config):
     if "d_head" not in config_dict and "hidden_size" in config_dict and "num_attention_heads" in config_dict:
         config_dict["d_head"] = config_dict["hidden_size"] // config_dict["num_attention_heads"]
 
+    required = {
+        "n_layers": "num_hidden_layers",
+        "d_model": "hidden_size",
+        "d_head": "head_dim",
+        "n_heads": "num_attention_heads",
+        "d_mlp": "intermediate_size",
+        "d_vocab": "vocab_size",
+    }
+    missing = {field: hf_key for field, hf_key in required.items() if field not in config_dict}
+    if missing:
+        raise ValueError(
+            f"Cannot build UnifiedConfig from {type(config).__name__}: the HF config "
+            f"is missing {sorted(missing.values())} (needed for {sorted(missing)})."
+        )
+
     return UnifiedConfig.from_dict(config_dict)

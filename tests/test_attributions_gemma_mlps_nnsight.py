@@ -353,82 +353,54 @@ def load_dummy_gemma_model_relp(cfg: AutoConfig, half_rule: bool | None = None) 
 
 
 def test_relp_encoder_vectors():
-    """Verify that RelP encoder vectors match a manual baseline.
+    """Verify RelP encoder vectors on a hand-computed micro-case.
 
-    For a gated MLP with gate_proj and up_proj, the RelP encoder vector
-    (https://arxiv.org/abs/2508.21258) for neuron s at position p is:
-        enc[s] = gate_val[s] * up_proj[s]
-               + up_val[s] * frozen_gate'[s] * gate_proj[s]
-    With half_rule=True, multiplied by 0.5.
-
-    This test constructs a standalone MLPDummyTranscoder (no nnsight) and
-    verifies encode_sparse against manual computation.
+    One neuron, d_model=2: w_gate=[1,0], w_up=[0,1], x=[1,2], so
+    gate_pre=1 and up_val=2. Expected encoders below are hand-computed
+    constants (see https://arxiv.org/abs/2508.21258):
+        enc = act(1) * w_up + 2 * act'_frozen(1) * w_gate,
+    where act'_frozen(1) = act(1)/1 (the frozen "gate" of the activation).
     """
     from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
     from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPDummyTranscoder
 
-    torch.manual_seed(42)
+    W_gate = torch.tensor([[1.0, 0.0]])
+    W_up = torch.tensor([[0.0, 1.0]])
+    x = torch.tensor([[1.0, 2.0]])
+    keep_all = slice(0, 0)  # do not zero any positions
 
-    d_model, d_mlp = 8, 16
-    n_pos = 6
+    expected = {
+        # silu: act(1) = sigmoid(1) = 0.7310585786...
+        "silu": torch.tensor([[1.4621171572600098, 0.7310585786300049]]),
+        # gelu_tanh: act(1) = 0.8411919906...
+        "gelu_tanh": torch.tensor([[1.6823839812165535, 0.8411919906082768]]),
+    }
+    act_modules = {"silu": nn.SiLU(), "gelu_tanh": nn.GELU(approximate='tanh')}
 
-    W_up = torch.randn(d_mlp, d_model)
-    W_gate = torch.randn(d_mlp, d_model)
+    for name, act_module in act_modules.items():
+        for half_rule in (False, True):
+            act_fn = GatedActivationFunction(W_gate, act_module, relp=True, half_rule=half_rule)
+            transcoder = MLPDummyTranscoder(
+                W_enc=W_up, b_enc=None, W_dec=torch.zeros(1, 2),
+                b_dec=None, activation_function=act_fn, layer_idx=0,
+            )
+            sparse_acts, encoders = transcoder.encode_sparse(x, zero_positions=keep_all)
+            assert sparse_acts._nnz() == 1, f"{name}: neuron should be active"
+            scale = 0.5 if half_rule else 1.0
+            assert torch.allclose(encoders, expected[name] * scale, atol=1e-6), (
+                f"{name} half_rule={half_rule}: got {encoders.tolist()}"
+            )
 
-    # Test with relp=True, half_rule=False (full Jacobian, no 0.5)
-    act_fn = GatedActivationFunction(W_gate, nn.GELU(approximate='tanh'), relp=True, half_rule=False)
-    transcoder = MLPDummyTranscoder(
-        W_enc=W_up, b_enc=None, W_dec=torch.randn(d_mlp, d_model),
-        b_dec=None, activation_function=act_fn, layer_idx=0,
+    # Without relp, encoder vectors are just the W_enc (= up_proj) rows
+    act_fn_plain = GatedActivationFunction(
+        W_gate, nn.GELU(approximate='tanh'), relp=False
     )
-    assert act_fn.relp
-    assert not act_fn.half_rule
-
-    input_acts = torch.randn(n_pos, d_model)
-
-    sparse_acts, active_encoders = transcoder.encode_sparse(input_acts)
-    pos_idx, feat_idx = sparse_acts.indices()
-
-    # Manual computation
-    up_pre = torch.nn.functional.linear(input_acts, W_up)
-    gate_pre = torch.nn.functional.linear(input_acts, W_gate)
-    gate_pre_active = gate_pre[pos_idx, feat_idx]
-    up_vals_active = up_pre[pos_idx, feat_idx]
-
-    # GELU tanh frozen derivative = gate value = 0.5*(1+tanh(c*(x+0.044715*x^3)))
-    frozen_deriv = 0.5 * (1.0 + torch.tanh(
-        0.7978845608028654 * (gate_pre_active + 0.044715 * gate_pre_active**3)
-    ))
-    gate_vals_active = nn.functional.gelu(gate_pre, approximate='tanh')[pos_idx, feat_idx]
-
-    # encoder = gate_val * up_proj + up_val * frozen_deriv * gate_proj (NO 0.5)
-    expected_encoders = (
-        gate_vals_active.unsqueeze(-1) * W_up[feat_idx]
-        + (up_vals_active * frozen_deriv).unsqueeze(-1) * W_gate[feat_idx]
-    )
-
-    assert torch.allclose(active_encoders, expected_encoders, atol=1e-6), (
-        f"Max diff: {(active_encoders - expected_encoders).abs().max().item()}"
-    )
-
-    # With half_rule=True, should be 0.5 * the above
-    act_fn_hr = GatedActivationFunction(W_gate, nn.GELU(approximate='tanh'), relp=True, half_rule=True)
-    transcoder_hr = MLPDummyTranscoder(
-        W_enc=W_up, b_enc=None, W_dec=torch.randn(d_mlp, d_model),
-        b_dec=None, activation_function=act_fn_hr, layer_idx=0,
-    )
-    _, encoders_hr = transcoder_hr.encode_sparse(input_acts)
-    assert torch.allclose(encoders_hr, expected_encoders * 0.5, atol=1e-6)
-
-    # Without relp, encoder vectors are just W_enc[feat_idx]
-    act_fn_plain = GatedActivationFunction(W_gate, nn.GELU(approximate='tanh'), relp=False)
     transcoder_plain = MLPDummyTranscoder(
-        W_enc=W_up, b_enc=None, W_dec=torch.randn(d_mlp, d_model),
+        W_enc=W_up, b_enc=None, W_dec=torch.zeros(1, 2),
         b_dec=None, activation_function=act_fn_plain, layer_idx=0,
     )
-    _, plain_encoders = transcoder_plain.encode_sparse(input_acts)
-    pos_idx2, feat_idx2 = transcoder_plain.encode_sparse(input_acts)[0].indices()
-    assert torch.allclose(plain_encoders, W_up[feat_idx2], atol=1e-6)
+    _, plain_encoders = transcoder_plain.encode_sparse(x, zero_positions=keep_all)
+    assert torch.equal(plain_encoders, W_up)
 
 
 def test_analytic_vs_autograd_encoder_vectors():

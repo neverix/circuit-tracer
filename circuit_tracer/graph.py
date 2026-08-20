@@ -194,6 +194,8 @@ class Graph:
 
 
 def normalize_matrix(matrix: torch.Tensor) -> torch.Tensor:
+    # abs() allocates a fresh tensor, so the in-place div_ below cannot touch the
+    # caller's matrix; in-place saves one adjacency-sized allocation.
     normalized = matrix.abs()
     row_sums = normalized.sum(dim=1, keepdim=True).clamp_(min=1e-10)
     normalized.div_(row_sums)
