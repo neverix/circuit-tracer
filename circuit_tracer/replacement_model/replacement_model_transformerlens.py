@@ -175,6 +175,7 @@ class TransformerLensReplacementModel(HookedTransformer):
     def create_dummy_mlp_transcoders(
         self, activation_threshold: float | None, scan_name: str | None = None,
         activation_topk: int | None = None,
+        jacobian_encoders: bool = False,
     ) -> MLPDummyTranscoderSet:
         transcoders = {}
         for layer in range(self.cfg.n_layers):
@@ -195,7 +196,7 @@ class TransformerLensReplacementModel(HookedTransformer):
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
             transcoders[layer] = MLPDummyTranscoder(
                 W_enc, b_enc, W_dec, b_dec, act_fn, layer,
-                activation_threshold, activation_topk,
+                activation_threshold, activation_topk, jacobian_encoders,
             )
 
         return MLPDummyTranscoderSet(transcoders,
@@ -209,6 +210,7 @@ class TransformerLensReplacementModel(HookedTransformer):
             transcoders = self.create_dummy_mlp_transcoders(
                 transcoder_set.activation_threshold, scan_name=transcoder_set.scan_name,
                 activation_topk=transcoder_set.activation_topk,
+                jacobian_encoders=transcoder_set.jacobian_encoders,
             )
         else:
             transcoders = transcoder_set

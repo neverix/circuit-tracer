@@ -391,7 +391,26 @@ def test_relp_encoder_vectors():
                 f"{name} half_rule={half_rule}: got {encoders.tolist()}"
             )
 
-    # Without relp, encoder vectors are just the W_enc (= up_proj) rows
+    # Exact (non-frozen) Jacobian encoders, no relp. Hand-computed with the
+    # true derivatives at gate_pre=1: silu' = sig*(2-sig), gelu_tanh' = phi + phi'
+    expected_exact = {
+        "silu": torch.tensor([[1.8553410237429737, 0.7310585786300049]]),
+        "gelu_tanh": torch.tensor([[2.165928167691565, 0.8411919906082768]]),
+    }
+    for name, act_module in act_modules.items():
+        act_fn = GatedActivationFunction(W_gate, act_module, relp=False)
+        transcoder = MLPDummyTranscoder(
+            W_enc=W_up, b_enc=None, W_dec=torch.zeros(1, 2),
+            b_dec=None, activation_function=act_fn, layer_idx=0,
+            jacobian_encoders=True,
+        )
+        _, encoders = transcoder.encode_sparse(x, zero_positions=keep_all)
+        assert torch.allclose(encoders, expected_exact[name], atol=1e-6), (
+            f"{name} exact: got {encoders.tolist()}"
+        )
+
+    # Without relp and without jacobian_encoders, encoder vectors are just the
+    # W_enc (= up_proj) rows
     act_fn_plain = GatedActivationFunction(
         W_gate, nn.GELU(approximate='tanh'), relp=False
     )
@@ -404,9 +423,10 @@ def test_relp_encoder_vectors():
 
 
 def test_analytic_vs_autograd_encoder_vectors():
-    """Verify analytic RelP encoder vectors match the autograd reference.
+    """Verify analytic encoder rows match the per-feature autograd reference.
 
-    Tests both GELU tanh (Gemma) and SiLU (Llama), with and without
+    Covers RelP (frozen derivative) and exact-Jacobian (jacobian_encoders
+    without relp), both GELU tanh (Gemma) and SiLU (Llama), with and without
     half_rule, and with/without encoder bias.
     """
     from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
@@ -423,17 +443,21 @@ def test_analytic_vs_autograd_encoder_vectors():
     input_acts = torch.randn(n_pos, d_model)
 
     configs = [
-        ("gelu_tanh, no half_rule", nn.GELU(approximate='tanh'), False),
-        ("gelu_tanh, half_rule", nn.GELU(approximate='tanh'), True),
-        ("silu, no half_rule", nn.SiLU(), False),
-        ("silu, half_rule", nn.SiLU(), True),
+        ("gelu_tanh, no half_rule", nn.GELU(approximate='tanh'), True, False),
+        ("gelu_tanh, half_rule", nn.GELU(approximate='tanh'), True, True),
+        ("silu, no half_rule", nn.SiLU(), True, False),
+        ("silu, half_rule", nn.SiLU(), True, True),
+        # exact (non-frozen) Jacobian encoders, no relp
+        ("gelu_tanh, exact", nn.GELU(approximate='tanh'), False, False),
+        ("silu, exact", nn.SiLU(), False, False),
     ]
 
-    for label, act_fn_module, half_rule in configs:
-        act_fn = GatedActivationFunction(W_gate, act_fn_module, relp=True, half_rule=half_rule)
+    for label, act_fn_module, relp, half_rule in configs:
+        act_fn = GatedActivationFunction(W_gate, act_fn_module, relp=relp, half_rule=half_rule)
         transcoder = MLPDummyTranscoder(
             W_enc=W_up, b_enc=None, W_dec=W_dec,
             b_dec=None, activation_function=act_fn, layer_idx=0,
+            jacobian_encoders=not relp,
         )
 
         sparse_acts, analytic_encoders = transcoder.encode_sparse(input_acts)
@@ -442,7 +466,7 @@ def test_analytic_vs_autograd_encoder_vectors():
         if len(pos_idx) == 0:
             continue
 
-        autograd_encoders = transcoder._compute_relp_encoders_autograd(
+        autograd_encoders = transcoder._compute_encoder_rows_autograd(
             input_acts, pos_idx, feat_idx
         )
 
@@ -463,7 +487,7 @@ def test_analytic_vs_autograd_encoder_vectors():
     sparse_acts_b, analytic_b = transcoder_bias.encode_sparse(input_acts)
     pos_b, feat_b = sparse_acts_b.indices()
     if len(pos_b) > 0:
-        autograd_b = transcoder_bias._compute_relp_encoders_autograd(
+        autograd_b = transcoder_bias._compute_encoder_rows_autograd(
             input_acts, pos_b, feat_b
         )
         assert torch.allclose(analytic_b, autograd_b, atol=1e-5), (

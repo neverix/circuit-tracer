@@ -188,6 +188,7 @@ class NNSightReplacementModel(LanguageModel):
         self, activation_threshold: float | None, scan_name: str | None = None,
         relp: bool = False, half_rule: bool | None = None,
         activation_topk: int | None = None,
+        jacobian_encoders: bool = False,
     ) -> MLPDummyTranscoderSet:
         nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
         transcoders = {}
@@ -213,7 +214,7 @@ class NNSightReplacementModel(LanguageModel):
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
             transcoders[layer] = MLPDummyTranscoder(
                 W_enc, b_enc, W_dec, b_dec, act_fn, layer,
-                activation_threshold, activation_topk,
+                activation_threshold, activation_topk, jacobian_encoders,
             )
 
         return MLPDummyTranscoderSet(transcoders,
@@ -261,6 +262,7 @@ class NNSightReplacementModel(LanguageModel):
                 transcoder_set.activation_threshold, scan_name=transcoder_set.scan_name,
                 relp=transcoder_set.relp, half_rule=transcoder_set.half_rule,
                 activation_topk=transcoder_set.activation_topk,
+                jacobian_encoders=transcoder_set.jacobian_encoders,
             )
         else:
             transcoders = transcoder_set

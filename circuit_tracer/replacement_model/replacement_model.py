@@ -25,6 +25,10 @@ class MLPTranscoderConfig(NamedTuple):
     # Keep only the top-k |activations| per position as feature candidates.
     # Composes with activation_threshold (threshold applies first).
     activation_topk: int | None = None
+    # Use exact local-Jacobian encoder vectors for gated MLPs instead of the
+    # up-projection rows. Implied (in frozen form) by relp; no effect on
+    # non-gated MLPs.
+    jacobian_encoders: bool = False
 
 
 

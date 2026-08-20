@@ -164,6 +164,51 @@ class GatedActivationFunction(nn.Module):
     def set_original_inputs(self, inputs: torch.Tensor):
         self.original_inputs = inputs
 
+    def _gate_fn(self, z: torch.Tensor) -> torch.Tensor:
+        """The gate g(z) with act(z) = z * g(z); also the RelP frozen derivative."""
+        if _is_gelu_tanh(self.act_fn):
+            return 0.5 * (1.0 + torch.tanh(0.7978845608028654 * (z + 0.044715 * z**3)))
+        assert _is_silu(self.act_fn), (
+            f"No gate form for {type(_unwrap(self.act_fn)).__name__}"
+        )
+        return torch.sigmoid(z)
+
+    def _act_and_deriv(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Elementwise act(z) and d act/dz.
+
+        With relp, the derivative is frozen at the gate value g(z)
+        (RelP, https://arxiv.org/abs/2508.21258). Otherwise autograd through
+        act_fn gives the true derivative, for any elementwise activation.
+        """
+        if self.relp:
+            gate = self._gate_fn(z)
+            return z * gate, gate
+        with torch.enable_grad():
+            z = z.detach().requires_grad_(True)
+            act = self.act_fn(z)
+            (deriv,) = torch.autograd.grad(act.sum(), z)
+        return act.detach(), deriv
+
+    def encoder_rows(self, input_acts, pos_idx, feat_idx, W_up, b_up=None):
+        """Jacobian rows of act(W_gate x) * (W_up x + b_up) w.r.t. x.
+
+        For each (position p, neuron s) pair:
+            row = act_val[p,s] * W_up[s] + up_val[p,s] * act_deriv[p,s] * W_gate[s]
+        With relp, act_deriv is frozen (see _act_and_deriv) and the rows are the
+        RelP encoder vectors; otherwise they are the exact local Jacobian.
+        With half_rule, rows are multiplied by 0.5.
+        """
+        gate_pre = F.linear(input_acts, self.W_gate)[pos_idx, feat_idx]
+        up_val = F.linear(input_acts, W_up, b_up)[pos_idx, feat_idx]
+        act_val, act_deriv = self._act_and_deriv(gate_pre)
+        rows = (
+            act_val.unsqueeze(-1) * W_up[feat_idx]
+            + (up_val * act_deriv).unsqueeze(-1) * self.W_gate[feat_idx]
+        )
+        if self.half_rule:
+            rows = rows * 0.5
+        return rows
+
     def forward(self, x: torch.Tensor):
         assert self.original_inputs is not None
         gate_input = F.linear(self.original_inputs, self.W_gate)
