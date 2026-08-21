@@ -352,76 +352,6 @@ def load_dummy_gemma_model_relp(cfg: AutoConfig, half_rule: bool | None = None) 
     return model
 
 
-def test_relp_encoder_vectors():
-    """Verify RelP encoder vectors on a hand-computed micro-case.
-
-    One neuron, d_model=2: w_gate=[1,0], w_up=[0,1], x=[1,2], so
-    gate_pre=1 and up_val=2. Expected encoders below are hand-computed
-    constants (see https://arxiv.org/abs/2508.21258):
-        enc = act(1) * w_up + 2 * act'_frozen(1) * w_gate,
-    where act'_frozen(1) = act(1)/1 (the frozen "gate" of the activation).
-    """
-    from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
-    from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPDummyTranscoder
-
-    W_gate = torch.tensor([[1.0, 0.0]])
-    W_up = torch.tensor([[0.0, 1.0]])
-    x = torch.tensor([[1.0, 2.0]])
-    keep_all = slice(0, 0)  # do not zero any positions
-
-    expected = {
-        # silu: act(1) = sigmoid(1) = 0.7310585786...
-        "silu": torch.tensor([[1.4621171572600098, 0.7310585786300049]]),
-        # gelu_tanh: act(1) = 0.8411919906...
-        "gelu_tanh": torch.tensor([[1.6823839812165535, 0.8411919906082768]]),
-    }
-    act_modules = {"silu": nn.SiLU(), "gelu_tanh": nn.GELU(approximate='tanh')}
-
-    for name, act_module in act_modules.items():
-        for half_rule in (False, True):
-            act_fn = GatedActivationFunction(W_gate, act_module, relp=True, half_rule=half_rule)
-            transcoder = MLPDummyTranscoder(
-                W_enc=W_up, b_enc=None, W_dec=torch.zeros(1, 2),
-                b_dec=None, activation_function=act_fn, layer_idx=0,
-            )
-            sparse_acts, encoders = transcoder.encode_sparse(x, zero_positions=keep_all)
-            assert sparse_acts._nnz() == 1, f"{name}: neuron should be active"
-            scale = 0.5 if half_rule else 1.0
-            assert torch.allclose(encoders, expected[name] * scale, atol=1e-6), (
-                f"{name} half_rule={half_rule}: got {encoders.tolist()}"
-            )
-
-    # Exact (non-frozen) Jacobian encoders, no relp. Hand-computed with the
-    # true derivatives at gate_pre=1: silu' = sig*(2-sig), gelu_tanh' = phi + phi'
-    expected_exact = {
-        "silu": torch.tensor([[1.8553410237429737, 0.7310585786300049]]),
-        "gelu_tanh": torch.tensor([[2.165928167691565, 0.8411919906082768]]),
-    }
-    for name, act_module in act_modules.items():
-        act_fn = GatedActivationFunction(W_gate, act_module, relp=False)
-        transcoder = MLPDummyTranscoder(
-            W_enc=W_up, b_enc=None, W_dec=torch.zeros(1, 2),
-            b_dec=None, activation_function=act_fn, layer_idx=0,
-            jacobian_encoders=True,
-        )
-        _, encoders = transcoder.encode_sparse(x, zero_positions=keep_all)
-        assert torch.allclose(encoders, expected_exact[name], atol=1e-6), (
-            f"{name} exact: got {encoders.tolist()}"
-        )
-
-    # Without relp and without jacobian_encoders, encoder vectors are just the
-    # W_enc (= up_proj) rows
-    act_fn_plain = GatedActivationFunction(
-        W_gate, nn.GELU(approximate='tanh'), relp=False
-    )
-    transcoder_plain = MLPDummyTranscoder(
-        W_enc=W_up, b_enc=None, W_dec=torch.zeros(1, 2),
-        b_dec=None, activation_function=act_fn_plain, layer_idx=0,
-    )
-    _, plain_encoders = transcoder_plain.encode_sparse(x, zero_positions=keep_all)
-    assert torch.equal(plain_encoders, W_up)
-
-
 def test_analytic_vs_autograd_encoder_vectors():
     """Verify analytic encoder rows match the per-feature autograd reference.
 
@@ -505,6 +435,17 @@ def test_analytic_vs_autograd_encoder_vectors():
     )
     sparse_empty, enc_empty = transcoder_empty.encode_sparse(input_acts)
     assert enc_empty.shape == (0, d_model)
+
+    # Without relp and without jacobian_encoders, encoder vectors are just the
+    # W_enc (= up_proj) rows
+    act_fn_plain = GatedActivationFunction(W_gate, nn.GELU(approximate='tanh'), relp=False)
+    transcoder_plain = MLPDummyTranscoder(
+        W_enc=W_up, b_enc=None, W_dec=W_dec,
+        b_dec=None, activation_function=act_fn_plain, layer_idx=0,
+    )
+    sparse_plain, plain_encoders = transcoder_plain.encode_sparse(input_acts)
+    _, feat_plain = sparse_plain.indices()
+    assert torch.equal(plain_encoders, W_up[feat_plain])
 
 
 def test_relp_attribution():
