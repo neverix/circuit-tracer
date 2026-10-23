@@ -241,7 +241,10 @@ def find_threshold(scores: torch.Tensor, threshold: float):
         sorted_scores = torch.sort(scores, descending=True).values
         cumulative_score = torch.cumsum(sorted_scores, dim=0) / torch.sum(sorted_scores)
         threshold_index: int = int(torch.searchsorted(cumulative_score, threshold).item())
-        threshold_index = min(threshold_index, len(cumulative_score) - 1)
+        # make sure we don't go past the last non-zero score (only really happens at threshold=1.0,
+        # when cumsum and sum round differently); a zero cut-off would keep every (non-)edge
+        n_nonzero = int((sorted_scores > 0).sum().item())
+        threshold_index = min(threshold_index, max(n_nonzero - 1, 0))
         return sorted_scores[threshold_index]
     else:
         # Binary search on score value — no sorting needed, no GPU→CPU sync in loop.
@@ -254,7 +257,9 @@ def find_threshold(scores: torch.Tensor, threshold: float):
             frac = scores[scores >= mid].sum() / total
             lo = torch.where(frac >= threshold_t, mid, lo)
             hi = torch.where(frac >= threshold_t, hi, mid)
-        return lo
+        # as above: never cut below the smallest non-zero score
+        positive = scores[scores > 0]
+        return torch.maximum(lo, positive.min()) if positive.numel() > 0 else lo
 
 
 class PruneResult(NamedTuple):
