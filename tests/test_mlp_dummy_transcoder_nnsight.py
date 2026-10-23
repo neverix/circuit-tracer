@@ -1,6 +1,7 @@
 """Tests for MLPDummyTranscoder and MLP attribution mode (NNSight backend)."""
 
 import gc
+from typing import Any
 
 import pytest
 import torch
@@ -53,7 +54,7 @@ gemma_2_config_dict = {
 MLP_NO_THRESHOLD = MLPTranscoderConfig(activation_threshold=None)
 
 # Shared tiny dimensions for all model families.
-TINY_DIMS = {
+TINY_DIMS: dict[str, Any] = {
     "hidden_size": 8,
     "intermediate_size": 16,
     "num_hidden_layers": 2,
@@ -140,12 +141,14 @@ CONFIG_FACTORIES = {
 MODEL_FAMILIES = list(CONFIG_FACTORIES)
 
 
-def _unwrap_transcoders(model):
+def _unwrap_transcoders(model) -> MLPDummyTranscoderSet:
     """Unwrap NNSight Envoy to get the actual MLPDummyTranscoderSet."""
-    return model.transcoders._module if hasattr(model.transcoders, '_module') else model.transcoders
+    transcoders = model.transcoders._module if hasattr(model.transcoders, '_module') else model.transcoders
+    assert isinstance(transcoders, MLPDummyTranscoderSet)
+    return transcoders
 
 
-def _get_mlp(model, layer: int):
+def _get_mlp(model, layer: int) -> Any:
     """Resolve the layer's MLP module via the architecture mapping.
 
     Works both outside and inside a trace context (Envoy attribute chains),
@@ -440,6 +443,7 @@ def test_nnsight_mlp_dummy_transcoder_topk_composes_with_threshold():
     )
     assert isinstance(model, NNSightReplacementModel)
     transcoder = _unwrap_transcoders(model)[0]
+    assert isinstance(transcoder, MLPDummyTranscoder)
 
     torch.manual_seed(0)
     test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32, device=model.device)

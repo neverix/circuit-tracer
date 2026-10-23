@@ -13,6 +13,7 @@ from circuit_tracer.replacement_model.replacement_model_transformerlens import (
 from circuit_tracer import ReplacementModel
 from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
 from circuit_tracer.transcoder import MLPDummyTranscoderSet
+from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPDummyTranscoder
 from circuit_tracer.utils import get_default_device
 
 # Disable the activation threshold for tests.
@@ -271,7 +272,9 @@ def test_tl_mlp_dummy_transcoder_activation_topk(family):
         backend="transformerlens",
     )
     assert isinstance(model, TransformerLensReplacementModel)
+    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
     transcoder = model.transcoders[0]
+    assert isinstance(transcoder, MLPDummyTranscoder)
     assert transcoder.activation_topk == k
 
     torch.manual_seed(0)

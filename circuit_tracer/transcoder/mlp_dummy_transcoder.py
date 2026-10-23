@@ -155,6 +155,7 @@ class MLPDummyTranscoder(nn.Module):
             act_fn.relp or self.jacobian_encoders
         )
         if use_jacobian:
+            assert isinstance(act_fn, GatedActivationFunction)
             if len(pos_idx) > 0:
                 active_encoders = act_fn.encoder_rows(
                     input_acts, pos_idx, feat_idx, self.W_enc, self.b_enc

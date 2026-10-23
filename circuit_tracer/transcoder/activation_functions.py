@@ -214,7 +214,7 @@ class GatedActivationFunction(nn.Module):
         gate_input = F.linear(self.original_inputs, self.W_gate)
         if self.relp:
             assert self._frozen_act is not None
-            gate = self._frozen_act(gate_input)
+            gate: torch.Tensor = self._frozen_act(gate_input)  # type: ignore
         else:
             gate = self.act_fn(gate_input)
         if self.half_rule:
