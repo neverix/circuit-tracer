@@ -29,76 +29,80 @@ def cleanup_cuda():
 
 def create_small_gemma2_tl_config():
     """Small Gemma-2-shaped config: gated GELU(tanh) MLP, pre+post norms, softcaps."""
-    return HookedTransformerConfig.from_dict({
-        "n_layers": 2,
-        "d_model": 8,
-        "n_ctx": 64,
-        "d_head": 4,
-        "model_name": "gemma-2-2b",
-        "n_heads": 2,
-        "d_mlp": 16,
-        "act_fn": "gelu_pytorch_tanh",
-        "d_vocab": 16,
-        "eps": 1e-06,
-        "use_attn_result": False,
-        "use_attn_scale": True,
-        "attn_scale": np.float64(16.0),
-        "use_local_attn": True,
-        "original_architecture": "Gemma2ForCausalLM",
-        "tokenizer_name": "gpt2",
-        "window_size": 4096,
-        "attn_types": ["global", "local"],
-        "normalization_type": "RMSPre",
-        "device": get_default_device(),
-        "attention_dir": "causal",
-        "positional_embedding_type": "rotary",
-        "final_rms": True,
-        "d_vocab_out": 16,
-        "rotary_dim": 4,
-        "use_hook_tokens": False,
-        "gated_mlp": True,
-        "default_prepend_bos": True,
-        "dtype": torch.float32,
-        "tokenizer_prepends_bos": True,
-        "n_key_value_heads": 2,
-        "rotary_base": 10000.0,
-        "use_normalization_before_and_after": True,
-        "attn_scores_soft_cap": 50.0,
-        "output_logits_soft_cap": 0.0,
-    })
+    return HookedTransformerConfig.from_dict(
+        {
+            "n_layers": 2,
+            "d_model": 8,
+            "n_ctx": 64,
+            "d_head": 4,
+            "model_name": "gemma-2-2b",
+            "n_heads": 2,
+            "d_mlp": 16,
+            "act_fn": "gelu_pytorch_tanh",
+            "d_vocab": 16,
+            "eps": 1e-06,
+            "use_attn_result": False,
+            "use_attn_scale": True,
+            "attn_scale": np.float64(16.0),
+            "use_local_attn": True,
+            "original_architecture": "Gemma2ForCausalLM",
+            "tokenizer_name": "gpt2",
+            "window_size": 4096,
+            "attn_types": ["global", "local"],
+            "normalization_type": "RMSPre",
+            "device": get_default_device(),
+            "attention_dir": "causal",
+            "positional_embedding_type": "rotary",
+            "final_rms": True,
+            "d_vocab_out": 16,
+            "rotary_dim": 4,
+            "use_hook_tokens": False,
+            "gated_mlp": True,
+            "default_prepend_bos": True,
+            "dtype": torch.float32,
+            "tokenizer_prepends_bos": True,
+            "n_key_value_heads": 2,
+            "rotary_base": 10000.0,
+            "use_normalization_before_and_after": True,
+            "attn_scores_soft_cap": 50.0,
+            "output_logits_soft_cap": 0.0,
+        }
+    )
 
 
 def create_small_llama_tl_config():
     """Small Llama-shaped config: gated SiLU MLP, RMSNorm, rotary."""
-    return HookedTransformerConfig.from_dict({
-        "n_layers": 2,
-        "d_model": 8,
-        "n_ctx": 64,
-        "d_head": 4,
-        "model_name": "llama-3.1-8b",
-        "n_heads": 2,
-        "d_mlp": 16,
-        "act_fn": "silu",
-        "d_vocab": 16,
-        "eps": 1e-06,
-        "use_attn_result": False,
-        "use_attn_scale": True,
-        "original_architecture": "LlamaForCausalLM",
-        "tokenizer_name": "gpt2",
-        "normalization_type": "RMSPre",
-        "device": get_default_device(),
-        "attention_dir": "causal",
-        "positional_embedding_type": "rotary",
-        "final_rms": True,
-        "d_vocab_out": 16,
-        "rotary_dim": 4,
-        "gated_mlp": True,
-        "default_prepend_bos": True,
-        "dtype": torch.float32,
-        "tokenizer_prepends_bos": True,
-        "n_key_value_heads": 2,
-        "rotary_base": 10000.0,
-    })
+    return HookedTransformerConfig.from_dict(
+        {
+            "n_layers": 2,
+            "d_model": 8,
+            "n_ctx": 64,
+            "d_head": 4,
+            "model_name": "llama-3.1-8b",
+            "n_heads": 2,
+            "d_mlp": 16,
+            "act_fn": "silu",
+            "d_vocab": 16,
+            "eps": 1e-06,
+            "use_attn_result": False,
+            "use_attn_scale": True,
+            "original_architecture": "LlamaForCausalLM",
+            "tokenizer_name": "gpt2",
+            "normalization_type": "RMSPre",
+            "device": get_default_device(),
+            "attention_dir": "causal",
+            "positional_embedding_type": "rotary",
+            "final_rms": True,
+            "d_vocab_out": 16,
+            "rotary_dim": 4,
+            "gated_mlp": True,
+            "default_prepend_bos": True,
+            "dtype": torch.float32,
+            "tokenizer_prepends_bos": True,
+            "n_key_value_heads": 2,
+            "rotary_base": 10000.0,
+        }
+    )
 
 
 def create_small_qwen3_tl_config():
@@ -160,7 +164,7 @@ def test_tl_mlp_dummy_transcoder_output_matches_mlp(family):
     test_input = torch.randn(3, cfg.d_model, dtype=torch.float32, device=cfg.device)
 
     with torch.no_grad():
-        if hasattr(mlp, 'W_gate'):
+        if hasattr(mlp, "W_gate"):
             gate_out = mlp.act_fn(test_input @ mlp.W_gate)  # type:ignore
             hidden = gate_out * (test_input @ mlp.W_in)  # type:ignore
         else:
@@ -249,9 +253,20 @@ def test_tl_mlp_get_activations(family):
 
     _, cache = model.run_with_cache(s)
 
-    tl_activation_cache = torch.stack([cache[f'blocks.{layer}.mlp.old_mlp.hook_post'].squeeze(0) for layer in range(model.cfg.n_layers)])
-    pre_act_hook = 'blocks.{layer}.mlp.old_mlp.hook_pre_linear' if 'blocks.0.mlp.old_mlp.hook_pre_linear' in cache else 'blocks.{layer}.mlp.old_mlp.hook_pre'
-    tl_pre_activation_cache = torch.stack([cache[pre_act_hook.format(layer=layer)].squeeze(0) for layer in range(model.cfg.n_layers)])
+    tl_activation_cache = torch.stack(
+        [
+            cache[f"blocks.{layer}.mlp.old_mlp.hook_post"].squeeze(0)
+            for layer in range(model.cfg.n_layers)
+        ]
+    )
+    pre_act_hook = (
+        "blocks.{layer}.mlp.old_mlp.hook_pre_linear"
+        if "blocks.0.mlp.old_mlp.hook_pre_linear" in cache
+        else "blocks.{layer}.mlp.old_mlp.hook_pre"
+    )
+    tl_pre_activation_cache = torch.stack(
+        [cache[pre_act_hook.format(layer=layer)].squeeze(0) for layer in range(model.cfg.n_layers)]
+    )
     _, pre_activation_cache = model.get_activations(s, apply_activation_function=False)
 
     tl_activation_cache[:, 0] = 0

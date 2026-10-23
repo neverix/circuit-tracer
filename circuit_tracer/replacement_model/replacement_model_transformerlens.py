@@ -13,7 +13,12 @@ from transformer_lens.hook_points import HookPoint
 
 from circuit_tracer.attribution.context_transformerlens import AttributionContext
 from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
-from circuit_tracer.transcoder import TranscoderSet, CrossLayerTranscoder, MLPDummyTranscoder, MLPDummyTranscoderSet
+from circuit_tracer.transcoder import (
+    TranscoderSet,
+    CrossLayerTranscoder,
+    MLPDummyTranscoder,
+    MLPDummyTranscoderSet,
+)
 from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
@@ -160,9 +165,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         if device is None:
             device = get_default_device()
 
-        transcoders, _ = load_transcoder_from_hub(transcoder_set,
-                                                  device=device,
-                                                  dtype=dtype)  # type: ignore
+        transcoders, _ = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)  # type: ignore
 
         return cls.from_pretrained_and_transcoders(
             model_name,
@@ -173,7 +176,9 @@ class TransformerLensReplacementModel(HookedTransformer):
         )
 
     def create_dummy_mlp_transcoders(
-        self, activation_threshold: float | None, scan_name: str | None = None,
+        self,
+        activation_threshold: float | None,
+        scan_name: str | None = None,
         activation_topk: int | None = None,
         jacobian_encoders: bool = False,
     ) -> MLPDummyTranscoderSet:
@@ -185,30 +190,42 @@ class TransformerLensReplacementModel(HookedTransformer):
             # TransformerLens W_out is (d_mlp, d_model), which matches our convention
             W_dec: torch.Tensor = mlp.W_out  # type: ignore
 
-            b_enc: torch.Tensor | None = getattr(mlp, 'b_in', None)  # type: ignore
-            b_dec: torch.Tensor | None = getattr(mlp, 'b_out', None)  # type: ignore
+            b_enc: torch.Tensor | None = getattr(mlp, "b_in", None)  # type: ignore
+            b_dec: torch.Tensor | None = getattr(mlp, "b_out", None)  # type: ignore
 
-            if hasattr(mlp, 'W_gate'):
+            if hasattr(mlp, "W_gate"):
                 # TransformerLens W_gate is (d_model, d_mlp), we need (d_mlp, d_model)
                 W_gate = mlp.W_gate.T
                 act_fn = GatedActivationFunction(W_gate, mlp.act_fn)
             else:
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
             transcoders[layer] = MLPDummyTranscoder(
-                W_enc, b_enc, W_dec, b_dec, act_fn, layer,
-                activation_threshold, activation_topk, jacobian_encoders,
+                W_enc,
+                b_enc,
+                W_dec,
+                b_dec,
+                act_fn,
+                layer,
+                activation_threshold,
+                activation_topk,
+                jacobian_encoders,
             )
 
-        return MLPDummyTranscoderSet(transcoders,
-                                     feature_input_hook='mlp.hook_in',
-                                     feature_output_hook='mlp.hook_out',
-                                     scan_name=scan_name)
+        return MLPDummyTranscoderSet(
+            transcoders,
+            feature_input_hook="mlp.hook_in",
+            feature_output_hook="mlp.hook_out",
+            scan_name=scan_name,
+        )
 
-    def _configure_replacement_model(self, transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig):
+    def _configure_replacement_model(
+        self, transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig
+    ):
         self.backend = "transformerlens"
         if isinstance(transcoder_set, MLPTranscoderConfig):
             transcoders = self.create_dummy_mlp_transcoders(
-                transcoder_set.activation_threshold, scan_name=transcoder_set.scan_name,
+                transcoder_set.activation_threshold,
+                scan_name=transcoder_set.scan_name,
                 activation_topk=transcoder_set.activation_topk,
                 jacobian_encoders=transcoder_set.jacobian_encoders,
             )
@@ -263,7 +280,10 @@ class TransformerLensReplacementModel(HookedTransformer):
         self.hook_embed.add_hook(enable_gradient, is_permanent=True)  # type: ignore
 
     def _configure_skip_connection(
-        self, block, transcoders: TranscoderSet | CrossLayerTranscoder | MLPDummyTranscoderSet, layer: int
+        self,
+        block,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPDummyTranscoderSet,
+        layer: int,
     ):
         cached = {}
 
@@ -663,7 +683,8 @@ class TransformerLensReplacementModel(HookedTransformer):
             n_pos = 1
         elif (freeze_attention or constrained_layers) and interventions:
             original_activations, freeze_hooks = self.setup_intervention_with_freeze(
-                inputs, constrained_layers=constrained_layers,
+                inputs,
+                constrained_layers=constrained_layers,
             )
             n_pos = original_activations.size(1)
         else:

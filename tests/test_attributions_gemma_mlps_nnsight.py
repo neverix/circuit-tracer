@@ -78,7 +78,9 @@ def verify_token_and_error_edges(
     error_vectors = ctx.error_vectors
     token_vectors = ctx.token_vectors
 
-    logits, activation_cache = model.get_activations(s, apply_activation_function=apply_activation_function)
+    logits, activation_cache = model.get_activations(
+        s, apply_activation_function=apply_activation_function
+    )
     logits = logits.squeeze(0)
 
     relevant_activations = activation_cache[
@@ -92,7 +94,9 @@ def verify_token_and_error_edges(
             s,
             constrained_layers=range(model.cfg.n_layers),  # type: ignore
         )
-        _, activation_fn = model.get_activation_fn(apply_activation_function=apply_activation_function)
+        _, activation_fn = model.get_activation_fn(
+            apply_activation_function=apply_activation_function
+        )
 
         with model.trace() as tracer:
             with tracer.invoke(s):
@@ -199,7 +203,9 @@ def verify_feature_edges(
     logit_tokens = graph.logit_tokens.to(device=model.device)  # type:ignore
     total_active_features = active_features.size(0)
 
-    logits, activation_cache = model.get_activations(s, apply_activation_function=apply_activation_function)
+    logits, activation_cache = model.get_activations(
+        s, apply_activation_function=apply_activation_function
+    )
     logits = logits.squeeze(0)
     # Post-activation cache for computing intervention values (delta must be in post-act space)
     _, post_activation_cache = model.get_activations(s, apply_activation_function=True)
@@ -254,7 +260,9 @@ def verify_feature_edges(
 
 
 def load_dummy_gemma_model(cfg: AutoConfig) -> NNSightReplacementModel:
-    model = ReplacementModel.from_config(cfg, MLPTranscoderConfig(activation_threshold=None), backend="nnsight")
+    model = ReplacementModel.from_config(
+        cfg, MLPTranscoderConfig(activation_threshold=None), backend="nnsight"
+    )
 
     for _, param in model.named_parameters():
         nn.init.uniform_(param, a=-1, b=1)
@@ -337,9 +345,12 @@ def test_gemma_2_2b():
         verify_feature_edges(model, graph)
 
 
-def load_dummy_gemma_model_relp(cfg: AutoConfig, half_rule: bool | None = None) -> NNSightReplacementModel:
+def load_dummy_gemma_model_relp(
+    cfg: AutoConfig, half_rule: bool | None = None
+) -> NNSightReplacementModel:
     model = ReplacementModel.from_config(
-        cfg, MLPTranscoderConfig(activation_threshold=None, relp=True, half_rule=half_rule),
+        cfg,
+        MLPTranscoderConfig(activation_threshold=None, relp=True, half_rule=half_rule),
         backend="nnsight",
     )
 
@@ -373,20 +384,24 @@ def test_analytic_vs_autograd_encoder_vectors():
     input_acts = torch.randn(n_pos, d_model)
 
     configs = [
-        ("gelu_tanh, no half_rule", nn.GELU(approximate='tanh'), True, False),
-        ("gelu_tanh, half_rule", nn.GELU(approximate='tanh'), True, True),
+        ("gelu_tanh, no half_rule", nn.GELU(approximate="tanh"), True, False),
+        ("gelu_tanh, half_rule", nn.GELU(approximate="tanh"), True, True),
         ("silu, no half_rule", nn.SiLU(), True, False),
         ("silu, half_rule", nn.SiLU(), True, True),
         # exact (non-frozen) Jacobian encoders, no relp
-        ("gelu_tanh, exact", nn.GELU(approximate='tanh'), False, False),
+        ("gelu_tanh, exact", nn.GELU(approximate="tanh"), False, False),
         ("silu, exact", nn.SiLU(), False, False),
     ]
 
     for label, act_fn_module, relp, half_rule in configs:
         act_fn = GatedActivationFunction(W_gate, act_fn_module, relp=relp, half_rule=half_rule)
         transcoder = MLPDummyTranscoder(
-            W_enc=W_up, b_enc=None, W_dec=W_dec,
-            b_dec=None, activation_function=act_fn, layer_idx=0,
+            W_enc=W_up,
+            b_enc=None,
+            W_dec=W_dec,
+            b_dec=None,
+            activation_function=act_fn,
+            layer_idx=0,
             jacobian_encoders=not relp,
         )
 
@@ -396,9 +411,7 @@ def test_analytic_vs_autograd_encoder_vectors():
         if len(pos_idx) == 0:
             continue
 
-        autograd_encoders = transcoder._compute_encoder_rows_autograd(
-            input_acts, pos_idx, feat_idx
-        )
+        autograd_encoders = transcoder._compute_encoder_rows_autograd(input_acts, pos_idx, feat_idx)
 
         assert torch.allclose(analytic_encoders, autograd_encoders, atol=1e-5), (
             f"{label}: max diff = {(analytic_encoders - autograd_encoders).abs().max().item()}"
@@ -407,30 +420,42 @@ def test_analytic_vs_autograd_encoder_vectors():
     # Test with encoder bias (b_enc != None)
     b_enc = torch.randn(d_mlp)
     act_fn_bias = GatedActivationFunction(
-        W_gate, nn.GELU(approximate='tanh'), relp=True, half_rule=True,
+        W_gate,
+        nn.GELU(approximate="tanh"),
+        relp=True,
+        half_rule=True,
     )
     transcoder_bias = MLPDummyTranscoder(
-        W_enc=W_up, b_enc=b_enc, W_dec=W_dec,
-        b_dec=None, activation_function=act_fn_bias, layer_idx=0,
+        W_enc=W_up,
+        b_enc=b_enc,
+        W_dec=W_dec,
+        b_dec=None,
+        activation_function=act_fn_bias,
+        layer_idx=0,
     )
 
     sparse_acts_b, analytic_b = transcoder_bias.encode_sparse(input_acts)
     pos_b, feat_b = sparse_acts_b.indices()
     if len(pos_b) > 0:
-        autograd_b = transcoder_bias._compute_encoder_rows_autograd(
-            input_acts, pos_b, feat_b
-        )
+        autograd_b = transcoder_bias._compute_encoder_rows_autograd(input_acts, pos_b, feat_b)
         assert torch.allclose(analytic_b, autograd_b, atol=1e-5), (
             f"b_enc: max diff = {(analytic_b - autograd_b).abs().max().item()}"
         )
 
     # Test zero active features (high threshold → nothing active)
     act_fn_empty = GatedActivationFunction(
-        W_gate, nn.GELU(approximate='tanh'), relp=True, half_rule=True,
+        W_gate,
+        nn.GELU(approximate="tanh"),
+        relp=True,
+        half_rule=True,
     )
     transcoder_empty = MLPDummyTranscoder(
-        W_enc=W_up, b_enc=None, W_dec=W_dec,
-        b_dec=None, activation_function=act_fn_empty, layer_idx=0,
+        W_enc=W_up,
+        b_enc=None,
+        W_dec=W_dec,
+        b_dec=None,
+        activation_function=act_fn_empty,
+        layer_idx=0,
         activation_threshold=1e6,
     )
     sparse_empty, enc_empty = transcoder_empty.encode_sparse(input_acts)
@@ -438,10 +463,14 @@ def test_analytic_vs_autograd_encoder_vectors():
 
     # Without relp and without jacobian_encoders, encoder vectors are just the
     # W_enc (= up_proj) rows
-    act_fn_plain = GatedActivationFunction(W_gate, nn.GELU(approximate='tanh'), relp=False)
+    act_fn_plain = GatedActivationFunction(W_gate, nn.GELU(approximate="tanh"), relp=False)
     transcoder_plain = MLPDummyTranscoder(
-        W_enc=W_up, b_enc=None, W_dec=W_dec,
-        b_dec=None, activation_function=act_fn_plain, layer_idx=0,
+        W_enc=W_up,
+        b_enc=None,
+        W_dec=W_dec,
+        b_dec=None,
+        activation_function=act_fn_plain,
+        layer_idx=0,
     )
     sparse_plain, plain_encoders = transcoder_plain.encode_sparse(input_acts)
     _, feat_plain = sparse_plain.indices()

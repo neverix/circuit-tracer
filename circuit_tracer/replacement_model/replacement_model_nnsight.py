@@ -13,7 +13,12 @@ from nnsight import TransformersModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
 from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
-from circuit_tracer.transcoder import TranscoderSet, CrossLayerTranscoder, MLPDummyTranscoder, MLPDummyTranscoderSet
+from circuit_tracer.transcoder import (
+    TranscoderSet,
+    CrossLayerTranscoder,
+    MLPDummyTranscoder,
+    MLPDummyTranscoderSet,
+)
 from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
@@ -193,8 +198,11 @@ class NNSightReplacementModel(TransformersModel):
         )
 
     def create_dummy_mlp_transcoders(
-        self, activation_threshold: float | None, scan_name: str | None = None,
-        relp: bool = False, half_rule: bool | None = None,
+        self,
+        activation_threshold: float | None,
+        scan_name: str | None = None,
+        relp: bool = False,
+        half_rule: bool | None = None,
         activation_topk: int | None = None,
         jacobian_encoders: bool = False,
     ) -> MLPDummyTranscoderSet:
@@ -202,7 +210,7 @@ class NNSightReplacementModel(TransformersModel):
         transcoders = {}
         for layer in range(self.cfg.n_layers):
             mlp: nn.Module = self._resolve_attr(self, nnsight_config.mlp.format(layer=layer))  # type: ignore
-            if not hasattr(mlp, 'up_proj'):
+            if not hasattr(mlp, "up_proj"):
                 raise NotImplementedError(
                     f"MLP dummy transcoders require a dense MLP with up_proj/down_proj; "
                     f"{type(mlp).__name__} at layer {layer} has none (MoE models such as "
@@ -212,23 +220,32 @@ class NNSightReplacementModel(TransformersModel):
             # Transpose to get (d_mlp, d_model) to match SingleLayerTranscoder convention
             W_dec: torch.Tensor = mlp.down_proj.weight.T  # type: ignore
 
-            b_enc: torch.Tensor | None = getattr(mlp.up_proj, 'bias', None)  # type: ignore
-            b_dec: torch.Tensor | None = getattr(mlp.down_proj, 'bias', None)  # type: ignore
+            b_enc: torch.Tensor | None = getattr(mlp.up_proj, "bias", None)  # type: ignore
+            b_dec: torch.Tensor | None = getattr(mlp.down_proj, "bias", None)  # type: ignore
 
-            if hasattr(mlp, 'gate_proj'):
+            if hasattr(mlp, "gate_proj"):
                 W_gate = mlp.gate_proj.weight  # type: ignore
                 act_fn = GatedActivationFunction(W_gate, mlp.act_fn, relp=relp, half_rule=half_rule)
             else:
                 act_fn: nn.Module = mlp.act_fn  # type: ignore
             transcoders[layer] = MLPDummyTranscoder(
-                W_enc, b_enc, W_dec, b_dec, act_fn, layer,
-                activation_threshold, activation_topk, jacobian_encoders,
+                W_enc,
+                b_enc,
+                W_dec,
+                b_dec,
+                act_fn,
+                layer,
+                activation_threshold,
+                activation_topk,
+                jacobian_encoders,
             )
 
-        return MLPDummyTranscoderSet(transcoders,
-                                     feature_input_hook='mlp.hook_in',
-                                     feature_output_hook='mlp.hook_out',
-                                     scan_name=scan_name)
+        return MLPDummyTranscoderSet(
+            transcoders,
+            feature_input_hook="mlp.hook_in",
+            feature_output_hook="mlp.hook_out",
+            scan_name=scan_name,
+        )
 
     @staticmethod
     def _resolve_attr(root: object, attr_path: str):
@@ -267,8 +284,10 @@ class NNSightReplacementModel(TransformersModel):
 
         if isinstance(transcoder_set, MLPTranscoderConfig):
             transcoders = self.create_dummy_mlp_transcoders(
-                transcoder_set.activation_threshold, scan_name=transcoder_set.scan_name,
-                relp=transcoder_set.relp, half_rule=transcoder_set.half_rule,
+                transcoder_set.activation_threshold,
+                scan_name=transcoder_set.scan_name,
+                relp=transcoder_set.relp,
+                half_rule=transcoder_set.half_rule,
                 activation_topk=transcoder_set.activation_topk,
                 jacobian_encoders=transcoder_set.jacobian_encoders,
             )

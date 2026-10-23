@@ -31,7 +31,6 @@ class MLPTranscoderConfig(NamedTuple):
     jacobian_encoders: bool = False
 
 
-
 class ReplacementModel:
     """
     Unified ReplacementModel interface that supports both nnsight and transformerlens backends.

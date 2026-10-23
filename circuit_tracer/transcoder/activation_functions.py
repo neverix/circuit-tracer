@@ -63,6 +63,7 @@ class TopK(nn.Module):
         gate.scatter_(dim=-1, index=indices, value=1)
         return x * gate.to(x.dtype)
 
+
 class FrozenSiLU(torch.autograd.Function):
     """SiLU with frozen sigmoid in backward: grad * sigmoid(x)."""
 
@@ -107,18 +108,18 @@ class HalfRule(torch.autograd.Function):
 
 def _unwrap(act_fn):
     """Unwrap nnsight Envoy wrapper if present."""
-    return act_fn._module if hasattr(act_fn, '_module') else act_fn
+    return act_fn._module if hasattr(act_fn, "_module") else act_fn
 
 
 def _is_gelu_tanh(act_fn) -> bool:
     """Detect GELU with tanh approximation (Gemma 3, etc.)."""
     act_fn = _unwrap(act_fn)
-    if hasattr(act_fn, 'approximate') and act_fn.approximate == 'tanh':
+    if hasattr(act_fn, "approximate") and act_fn.approximate == "tanh":
         return True
-    if isinstance(act_fn, nn.GELU) and getattr(act_fn, 'approximate', 'none') == 'tanh':
+    if isinstance(act_fn, nn.GELU) and getattr(act_fn, "approximate", "none") == "tanh":
         return True
     # HuggingFace PytorchGELUTanh
-    if 'GELUTanh' in type(act_fn).__name__:
+    if "GELUTanh" in type(act_fn).__name__:
         return True
     return False
 
@@ -128,7 +129,7 @@ def _is_silu(act_fn) -> bool:
     act_fn = _unwrap(act_fn)
     if isinstance(act_fn, nn.SiLU):
         return True
-    if 'SiLU' in type(act_fn).__name__:
+    if "SiLU" in type(act_fn).__name__:
         return True
     return False
 
@@ -168,9 +169,7 @@ class GatedActivationFunction(nn.Module):
         """The gate g(z) with act(z) = z * g(z); also the RelP frozen derivative."""
         if _is_gelu_tanh(self.act_fn):
             return 0.5 * (1.0 + torch.tanh(0.7978845608028654 * (z + 0.044715 * z**3)))
-        assert _is_silu(self.act_fn), (
-            f"No gate form for {type(_unwrap(self.act_fn)).__name__}"
-        )
+        assert _is_silu(self.act_fn), f"No gate form for {type(_unwrap(self.act_fn)).__name__}"
         return torch.sigmoid(z)
 
     def _act_and_deriv(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

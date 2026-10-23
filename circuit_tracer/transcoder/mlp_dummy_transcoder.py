@@ -32,7 +32,7 @@ class MLPDummyTranscoder(nn.Module):
 
     def __init__(
         self,
-        W_enc: torch.Tensor, 
+        W_enc: torch.Tensor,
         b_enc: torch.Tensor | None,
         W_dec: torch.Tensor,
         b_dec: torch.Tensor | None,
@@ -180,10 +180,16 @@ class MLPDummyTranscoder(nn.Module):
             pre = F.linear(x, W_enc, self.b_enc)
             self.activation_function.set_original_inputs(x)
             acts_grad = self.activation_function(pre)
-            active_encoders = torch.stack([
-                torch.autograd.grad(acts_grad[p, s], x, retain_graph=True)[0][p]
-                for p, s in zip(pos_idx, feat_idx)
-            ]) if len(pos_idx) > 0 else torch.empty(0, self.d_model)
+            active_encoders = (
+                torch.stack(
+                    [
+                        torch.autograd.grad(acts_grad[p, s], x, retain_graph=True)[0][p]
+                        for p, s in zip(pos_idx, feat_idx)
+                    ]
+                )
+                if len(pos_idx) > 0
+                else torch.empty(0, self.d_model)
+            )
         return active_encoders
 
     def decode_sparse(self, sparse_acts):
@@ -231,6 +237,7 @@ class MLPDummyTranscoderSet(nn.Module):
         scan_name: Optional identifier to identify corresponding feature visualization
         skip_connection: Whether transcoders include learned skip connections
     """
+
     transcoders: nn.ModuleList
     n_layers: int
     d_transcoder: int
@@ -252,7 +259,7 @@ class MLPDummyTranscoderSet(nn.Module):
 
         self.transcoders = nn.ModuleList([transcoders[i] for i in range(len(transcoders))])
         self.n_layers = len(self.transcoders)
-        self.d_transcoder = self.transcoders[0].d_transcoder  #type: ignore
+        self.d_transcoder = self.transcoders[0].d_transcoder  # type: ignore
 
         # Verify all transcoders have the same d_transcoder
         for transcoder in self.transcoders:
@@ -381,4 +388,3 @@ class MLPDummyTranscoderSet(nn.Module):
 
     def to_safetensors(self, save_dir: str):
         raise NotImplementedError("Can't convert MLPDummyTranscoder to safetensors")
-

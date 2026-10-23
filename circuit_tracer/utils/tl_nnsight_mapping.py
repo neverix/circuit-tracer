@@ -102,10 +102,16 @@ gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
             "model.language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0",
             "output",
         ),
-        "hook_resid_mid": ("model.language_model.layers[{layer}].pre_feedforward_layernorm", "input"),
+        "hook_resid_mid": (
+            "model.language_model.layers[{layer}].pre_feedforward_layernorm",
+            "input",
+        ),
         "mlp.hook_in": ("model.language_model.layers[{layer}].mlp", "input"),
         "mlp.hook_out": ("model.language_model.layers[{layer}].mlp", "output"),
-        "hook_mlp_out": ("model.language_model.layers[{layer}].post_feedforward_layernorm", "output"),
+        "hook_mlp_out": (
+            "model.language_model.layers[{layer}].post_feedforward_layernorm",
+            "output",
+        ),
     },
 )
 
@@ -291,7 +297,11 @@ def convert_nnsight_config_to_transformerlens(config):
             config_dict[transformerlens_field] = config_dict[nnsight_field]
 
     # Compute head_dim if missing (e.g., Qwen2)
-    if "d_head" not in config_dict and "hidden_size" in config_dict and "num_attention_heads" in config_dict:
+    if (
+        "d_head" not in config_dict
+        and "hidden_size" in config_dict
+        and "num_attention_heads" in config_dict
+    ):
         config_dict["d_head"] = config_dict["hidden_size"] // config_dict["num_attention_heads"]
 
     required = {

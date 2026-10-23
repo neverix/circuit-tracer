@@ -143,7 +143,9 @@ MODEL_FAMILIES = list(CONFIG_FACTORIES)
 
 def _unwrap_transcoders(model) -> MLPDummyTranscoderSet:
     """Unwrap NNSight Envoy to get the actual MLPDummyTranscoderSet."""
-    transcoders = model.transcoders._module if hasattr(model.transcoders, '_module') else model.transcoders
+    transcoders = (
+        model.transcoders._module if hasattr(model.transcoders, "_module") else model.transcoders
+    )
     assert isinstance(transcoders, MLPDummyTranscoderSet)
     return transcoders
 
