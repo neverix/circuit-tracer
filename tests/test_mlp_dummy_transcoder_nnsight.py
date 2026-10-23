@@ -171,7 +171,7 @@ def test_nnsight_mlp_dummy_transcoder_output_matches_mlp(family):
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
-    test_input = torch.randn(3, text_config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(3, text_config.hidden_size, dtype=torch.float32, device=model.device)
 
     with torch.no_grad():
         gate_out = mlp.act_fn(mlp.gate_proj(test_input))  # type: ignore
@@ -230,7 +230,7 @@ def test_nnsight_mlp_dummy_transcoder_encode_sparse(family):
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
-    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32, device=model.device)
 
     with torch.no_grad():
         dense_acts = transcoder.encode(test_input)
@@ -258,7 +258,7 @@ def test_nnsight_mlp_dummy_transcoder_decode_sparse(family):
     transcoder = transcoders[0]
 
     torch.manual_seed(42)
-    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32, device=model.device)
 
     with torch.no_grad():
         sparse_acts, _ = transcoder.encode_sparse(test_input, zero_positions=slice(0, 1))
@@ -395,7 +395,7 @@ def test_nnsight_mlp_dummy_transcoder_activation_topk(family):
     assert transcoder.activation_topk == k
 
     torch.manual_seed(0)
-    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32, device=model.device)
 
     with torch.no_grad():
         gated = transcoder.encode(test_input)
@@ -442,7 +442,7 @@ def test_nnsight_mlp_dummy_transcoder_topk_composes_with_threshold():
     transcoder = _unwrap_transcoders(model)[0]
 
     torch.manual_seed(0)
-    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32)
+    test_input = torch.randn(5, text_config.hidden_size, dtype=torch.float32, device=model.device)
 
     with torch.no_grad():
         gated = transcoder.encode(test_input)
