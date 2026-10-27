@@ -199,18 +199,13 @@ def load_transcoders(
             device=device,
         )
     elif model_kind == "mlp":
-        from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
+        from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPTranscoderConfig
 
-        activation_threshold = config.get("activation_threshold", 0.25)
-        if activation_threshold == 0.0:
-            activation_threshold = None
-        activation_topk = config.get("activation_topk")
-        if activation_topk == 0:
-            activation_topk = None
+        # 0 disables either sparsifier
         return MLPTranscoderConfig(
-            activation_threshold=activation_threshold,
+            activation_threshold=config.get("activation_threshold", 0.25) or None,
             scan_name=config.get("scan_name", config.get("scan")),
-            activation_topk=activation_topk,
+            activation_topk=config.get("activation_topk") or None,
         )
     else:
         raise ValueError(f"Unknown model kind: {model_kind}")

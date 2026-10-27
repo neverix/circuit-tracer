@@ -154,6 +154,7 @@ def _run_attribution(
         ctx._resid_activations[-1] = model.ln_final(residual)
     logger.info(f"Forward pass completed in {time.time() - phase_start:.2f}s")
 
+    # MLP-neuron transcoders read the MLP weights, so the MLPs must stay loaded
     if offload and not isinstance(model.transcoders, MLPDummyTranscoderSet):
         offload_handles += offload_modules([block.mlp for block in model.blocks], offload)
 

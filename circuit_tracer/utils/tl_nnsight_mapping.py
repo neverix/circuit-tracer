@@ -13,7 +13,7 @@ class TransformerLens_NNSight_Mapping:
     embed_location: str  # Location of the embedding Module (the location to which we will attribute for embeddings)
     embed_weight: str  # Location of the embedding weight matrix
     unembed_weight: str  # Location of the unembedding weight matrix
-    mlp: str  # Location of the mlp
+    mlp: str  # Location of the MLP Module (read by MLPTranscoderConfig)
     feature_hook_mapping: dict[
         str, tuple[str, Literal["input", "output"]]
     ]  # Mapping from (TransformerLens Hook) to a tuple representing an NNSight Envoy location, and whether we want its input or output
@@ -42,7 +42,7 @@ gemma_2_mapping = TransformerLens_NNSight_Mapping(
         ),
         "hook_resid_mid": ("model.layers[{layer}].pre_feedforward_layernorm", "input"),
         "hook_mlp_out": ("model.layers[{layer}].post_feedforward_layernorm", "output"),
-        "mlp.hook_in": ("model.layers[{layer}].mlp", "input"),
+        "mlp.hook_in": ("model.layers[{layer}].pre_feedforward_layernorm", "output"),
         "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
     },
 )
@@ -71,47 +71,38 @@ gemma_3_mapping = TransformerLens_NNSight_Mapping(
             "output",
         ),
         "hook_resid_mid": ("model.layers[{layer}].pre_feedforward_layernorm", "input"),
-        "mlp.hook_in": ("model.layers[{layer}].mlp", "input"),
+        "mlp.hook_in": ("model.layers[{layer}].pre_feedforward_layernorm", "output"),
         "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
         "hook_mlp_out": ("model.layers[{layer}].post_feedforward_layernorm", "output"),
     },
 )
 
-# Gemma3ForConditionalGeneration nests the text tower at model.language_model.X
-# (the outer .model is a Gemma3Model wrapping vision_tower + language_model).
-# All paths below are anchored at the top of the model.
 gemma_3_conditional_mapping = TransformerLens_NNSight_Mapping(
     model_architecture="Gemma3ForConditionalGeneration",
-    attention_location_pattern="model.language_model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
+    attention_location_pattern="language_model.layers[{layer}].self_attn.source.attention_interface_2.source.nn_functional_dropout_0",
     layernorm_scale_location_patterns=[
-        "model.language_model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "model.language_model.layers[{layer}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
-        "model.language_model.layers[{layer}].self_attn.k_norm.source.self__norm_0.source.torch_rsqrt_0",
-        "model.language_model.layers[{layer}].post_attention_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "model.language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "model.language_model.layers[{layer}].post_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
-        "model.language_model.norm.source.self__norm_0.source.torch_rsqrt_0",
+        "language_model.layers[{layer}].input_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        "language_model.layers[{layer}].self_attn.q_norm.source.self__norm_0.source.torch_rsqrt_0",
+        "language_model.layers[{layer}].self_attn.k_norm.source.self__norm_0.source.torch_rsqrt_0",
+        "language_model.layers[{layer}].post_attention_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        "language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        "language_model.layers[{layer}].post_feedforward_layernorm.source.self__norm_0.source.torch_rsqrt_0",
+        "language_model.norm.source.self__norm_0.source.torch_rsqrt_0",
     ],
-    pre_logit_location="model.language_model",
-    embed_location="model.language_model.embed_tokens",
-    embed_weight="model.language_model.embed_tokens.weight",
+    pre_logit_location="language_model",
+    embed_location="language_model.embed_tokens",
+    embed_weight="language_model.embed_tokens.weight",
     unembed_weight="lm_head.weight",
-    mlp="model.language_model.layers[{layer}].mlp",
+    mlp="language_model.layers[{layer}].mlp",
     feature_hook_mapping={
         "ln2.hook_normalized": (
-            "model.language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0",
+            "language_model.layers[{layer}].pre_feedforward_layernorm.source.self__norm_0",
             "output",
         ),
-        "hook_resid_mid": (
-            "model.language_model.layers[{layer}].pre_feedforward_layernorm",
-            "input",
-        ),
-        "mlp.hook_in": ("model.language_model.layers[{layer}].mlp", "input"),
-        "mlp.hook_out": ("model.language_model.layers[{layer}].mlp", "output"),
-        "hook_mlp_out": (
-            "model.language_model.layers[{layer}].post_feedforward_layernorm",
-            "output",
-        ),
+        "hook_resid_mid": ("language_model.layers[{layer}].pre_feedforward_layernorm", "input"),
+        "mlp.hook_in": ("language_model.layers[{layer}].pre_feedforward_layernorm", "output"),
+        "mlp.hook_out": ("language_model.layers[{layer}].mlp", "output"),
+        "hook_mlp_out": ("language_model.layers[{layer}].post_feedforward_layernorm", "output"),
     },
 )
 
@@ -154,8 +145,6 @@ qwen_3_mapping = TransformerLens_NNSight_Mapping(
     feature_hook_mapping={
         "mlp.hook_in": ("model.layers[{layer}].post_attention_layernorm", "output"),
         "mlp.hook_out": ("model.layers[{layer}].mlp", "output"),
-        "hook_mlp_out": ("model.layers[{layer}].mlp", "output"),
-        "hook_resid_mid": ("model.layers[{layer}].post_attention_layernorm", "input"),
     },
 )
 
@@ -293,30 +282,7 @@ def convert_nnsight_config_to_transformerlens(config):
         config_dict |= config_dict["text_config"]
 
     for nnsight_field, transformerlens_field in field_mappings.items():
-        if transformerlens_field not in config_dict and nnsight_field in config_dict:
+        if transformerlens_field not in config_dict:
             config_dict[transformerlens_field] = config_dict[nnsight_field]
-
-    # Compute head_dim if missing (e.g., Qwen2)
-    if (
-        "d_head" not in config_dict
-        and "hidden_size" in config_dict
-        and "num_attention_heads" in config_dict
-    ):
-        config_dict["d_head"] = config_dict["hidden_size"] // config_dict["num_attention_heads"]
-
-    required = {
-        "n_layers": "num_hidden_layers",
-        "d_model": "hidden_size",
-        "d_head": "head_dim",
-        "n_heads": "num_attention_heads",
-        "d_mlp": "intermediate_size",
-        "d_vocab": "vocab_size",
-    }
-    missing = {field: hf_key for field, hf_key in required.items() if field not in config_dict}
-    if missing:
-        raise ValueError(
-            f"Cannot build UnifiedConfig from {type(config).__name__}: the HF config "
-            f"is missing {sorted(missing.values())} (needed for {sorted(missing)})."
-        )
 
     return UnifiedConfig.from_dict(config_dict)

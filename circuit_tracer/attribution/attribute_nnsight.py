@@ -160,6 +160,7 @@ def _run_attribution(
     logger.info(f"Forward pass completed in {time.time() - phase_start:.2f}s")
 
     if offload:
+        # MLP-neuron transcoders read the MLP weights, so the MLPs must stay loaded
         if not isinstance(model.transcoders, MLPDummyTranscoderSet):
             offload_handles += offload_modules(
                 [layer.mlp for layer in getattr(model.pre_logit_location, "layers")], offload

@@ -2,33 +2,15 @@
 Unified ReplacementModel interface that supports both nnsight and transformerlens backends.
 """
 
-from typing import Literal, NamedTuple
+from typing import Literal
 import torch
 
-from circuit_tracer.transcoder import TranscoderSet
+from circuit_tracer.transcoder import MLPTranscoderConfig, TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 
 Backend = Literal["nnsight", "transformerlens"]
-
-
-class MLPTranscoderConfig(NamedTuple):
-    activation_threshold: float | None
-    scan_name: str | None = None
-    # RelP: frozen Jacobian encoder vectors for gated MLPs.
-    # https://arxiv.org/abs/2508.21258
-    relp: bool = False
-    # HalfRule correction for bilinear double-counting (gate*up).
-    # None = follows relp setting; explicit True/False overrides.
-    half_rule: bool | None = None
-    # Keep only the top-k |activations| per position as feature candidates.
-    # Composes with activation_threshold (threshold applies first).
-    activation_topk: int | None = None
-    # Use exact local-Jacobian encoder vectors for gated MLPs instead of the
-    # up-projection rows. Implied (in frozen form) by relp; no effect on
-    # non-gated MLPs.
-    jacobian_encoders: bool = False
 
 
 class ReplacementModel:
@@ -100,8 +82,9 @@ class ReplacementModel:
 
         Args:
             model_name (str): The name of the pretrained transformer model
-            transcoders (Union[TranscoderSet, CrossLayerTranscoder]): The transcoder set or
-                cross-layer transcoder
+            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPTranscoderConfig]): The
+                transcoder set, cross-layer transcoder, or MLPTranscoderConfig to use the
+                model's MLP neurons
             backend (Backend): Which backend to use - "nnsight" or "transformerlens"
             device (Optional[torch.device]): Device to load the model on
             dtype (Optional[torch.dtype]): Data type for the model
@@ -152,8 +135,9 @@ class ReplacementModel:
         Args:
             config: Model configuration (AutoConfig for nnsight, HookedTransformerConfig
                 for transformerlens)
-            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPTranscoderConfig]):
-                The transcoder set, cross-layer transcoder, or MLP transcoder config
+            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPTranscoderConfig]): The
+                transcoder set, cross-layer transcoder, or MLPTranscoderConfig to use the
+                model's MLP neurons
             backend (Backend): Which backend to use - "nnsight" or "transformerlens"
             **kwargs: Additional arguments passed to the backend-specific implementation
 

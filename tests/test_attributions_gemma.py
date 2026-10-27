@@ -14,7 +14,7 @@ from circuit_tracer.attribution.attribute_transformerlens import attribute
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
-from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
+from circuit_tracer.transcoder import MLPTranscoderConfig, SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 from circuit_tracer.utils import get_default_device
 
@@ -137,6 +137,9 @@ def verify_feature_edges(
 
     logits, activation_cache = model.get_activations(s, apply_activation_function=False)
     logits = logits.squeeze(0)
+    # interventions set post-activation values (equal to pre-activations for active JumpReLU
+    # features, but not for MLP neurons)
+    _, post_activation_cache = model.get_activations(s, apply_activation_function=True)
 
     relevant_activations = activation_cache[
         active_features[:, 0], active_features[:, 1], active_features[:, 2]
@@ -182,7 +185,7 @@ def verify_feature_edges(
     chosen_nodes = random_order[:n_samples]
     for chosen_node in tqdm(chosen_nodes):
         layer, pos, feature_idx = active_features[chosen_node].tolist()
-        old_activation = activation_cache[layer, pos, feature_idx]
+        old_activation = post_activation_cache[layer, pos, feature_idx]
         new_activation = old_activation * 2
         expected_effects = adjacency_matrix[:, chosen_node]
         verify_intervention(expected_effects, layer, pos, feature_idx, new_activation)
@@ -200,7 +203,16 @@ def patch_tokenizer_special_ids(model: TransformerLensReplacementModel, special_
         tokenizer_class.all_special_ids = original_all_special_ids  # type: ignore
 
 
-def load_dummy_gemma_model(cfg: HookedTransformerConfig) -> TransformerLensReplacementModel:
+def load_dummy_gemma_model(
+    cfg: HookedTransformerConfig, mlp_neurons: bool = False
+) -> TransformerLensReplacementModel:
+    if mlp_neurons:
+        model = ReplacementModel.from_config(cfg, MLPTranscoderConfig(activation_threshold=None))
+        assert isinstance(model, TransformerLensReplacementModel)
+        for _, param in model.named_parameters():
+            nn.init.uniform_(param, a=-1, b=1)
+        return model
+
     transcoders = {
         layer_idx: SingleLayerTranscoder(
             cfg.d_model, cfg.d_model * 4, JumpReLU(torch.tensor(0.0), 0.1), layer_idx
@@ -230,7 +242,8 @@ def load_dummy_gemma_model(cfg: HookedTransformerConfig) -> TransformerLensRepla
     return model
 
 
-def test_small_gemma_model():
+@pytest.mark.parametrize("mlp_neurons", [False, True], ids=["jumprelu", "mlp_neurons"])
+def test_small_gemma_model(mlp_neurons):
     s = torch.tensor([0, 3, 4, 3, 2, 5, 3, 8])
     gemma_small_cfg = {
         "n_layers": 2,
@@ -301,7 +314,7 @@ def test_small_gemma_model():
         "NTK_by_parts_factor": 8.0,
     }
     cfg = HookedTransformerConfig.from_dict(gemma_small_cfg)
-    model = load_dummy_gemma_model(cfg)
+    model = load_dummy_gemma_model(cfg, mlp_neurons)
 
     with patch_tokenizer_special_ids(model, [0]):
         graph = attribute(s, model)
@@ -310,7 +323,8 @@ def test_small_gemma_model():
         verify_feature_edges(model, graph)
 
 
-def test_large_gemma_model():
+@pytest.mark.parametrize("mlp_neurons", [False, True], ids=["jumprelu", "mlp_neurons"])
+def test_large_gemma_model(mlp_neurons):
     s = torch.tensor([0, 113, 24, 53, 27])
     gemma_large_cfg = {
         "n_layers": 16,
@@ -398,7 +412,7 @@ def test_large_gemma_model():
         "NTK_by_parts_factor": 8.0,
     }
     cfg = HookedTransformerConfig.from_dict(gemma_large_cfg)
-    model = load_dummy_gemma_model(cfg)
+    model = load_dummy_gemma_model(cfg, mlp_neurons)
 
     with patch_tokenizer_special_ids(model, [0]):
         graph = attribute(s, model)
@@ -421,6 +435,21 @@ def test_gemma_2_2b():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_gemma_2_2b_mlp_neurons():
+    s = "The National Digital Analytics Group (ND"
+    model = ReplacementModel.from_pretrained_and_transcoders(
+        "google/gemma-2-2b", MLPTranscoderConfig(activation_threshold=0.25)
+    )
+    assert isinstance(model, TransformerLensReplacementModel)
+    graph = attribute(s, model)
+
+    print("Changing logit softcap to 0, as the logits will otherwise be off.")
+    with model.zero_softcap():
+        verify_token_and_error_edges(model, graph)
+        verify_feature_edges(model, graph)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_2_2b_clt():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained("google/gemma-2-2b", "mntss/clt-gemma-2-2b-426k")
@@ -435,7 +464,7 @@ def test_gemma_2_2b_clt():
 
 if __name__ == "__main__":
     torch.manual_seed(42)
-    test_small_gemma_model()
-    test_large_gemma_model()
+    test_small_gemma_model(mlp_neurons=False)
+    test_large_gemma_model(mlp_neurons=False)
     test_gemma_2_2b()
     test_gemma_2_2b_clt()  # This will pass, but is slow to run

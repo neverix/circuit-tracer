@@ -1,23 +1,66 @@
-"""Tests for MLPDummyTranscoder and MLP attribution mode (TransformerLens backend)."""
+"""MLP neurons as transcoder features, TransformerLens backend, on tiny models of each family."""
 
 import gc
 
-import numpy as np
 import pytest
 import torch
 from transformer_lens import HookedTransformerConfig
 
+from circuit_tracer import ReplacementModel
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
-from circuit_tracer import ReplacementModel
-from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
-from circuit_tracer.transcoder import MLPDummyTranscoderSet
-from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPDummyTranscoder
+from circuit_tracer.transcoder import MLPDummyTranscoderSet, MLPTranscoderConfig
 from circuit_tracer.utils import get_default_device
 
-# Disable the activation threshold for tests.
-MLP_NO_THRESHOLD = MLPTranscoderConfig(activation_threshold=None)
+TINY_DIMS = dict(
+    n_layers=2,
+    d_model=8,
+    d_head=4,
+    n_heads=2,
+    n_key_value_heads=2,
+    d_mlp=16,
+    d_vocab=16,
+    n_ctx=64,
+    normalization_type="RMSPre",
+    positional_embedding_type="rotary",
+    rotary_dim=4,
+    gated_mlp=True,
+    tokenizer_name="gpt2",  # any ungated tokenizer
+)
+
+CONFIGS = {
+    # gated GELU(tanh), norms before and after each sublayer, soft-capped attention
+    "gemma2": dict(
+        model_name="gemma-2-2b",
+        original_architecture="Gemma2ForCausalLM",
+        act_fn="gelu_pytorch_tanh",
+        use_normalization_before_and_after=True,
+        attn_scores_soft_cap=50.0,
+    ),
+    "llama": dict(
+        model_name="llama-3.1-8b", original_architecture="LlamaForCausalLM", act_fn="silu"
+    ),
+    "qwen3": dict(
+        model_name="qwen3-0.6b",
+        original_architecture="Qwen3ForCausalLM",
+        act_fn="silu",
+        use_qk_norm=True,
+    ),
+}
+
+
+def load_model(family: str, **mlp_config) -> TransformerLensReplacementModel:
+    cfg = HookedTransformerConfig(**TINY_DIMS, **CONFIGS[family], device=str(get_default_device()))
+    mlp_config.setdefault("activation_threshold", None)
+    model = ReplacementModel.from_config(cfg, MLPTranscoderConfig(**mlp_config))
+    assert isinstance(model, TransformerLensReplacementModel)
+    return model
+
+
+def transcoder_set(model: TransformerLensReplacementModel) -> MLPDummyTranscoderSet:
+    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
+    return model.transcoders
 
 
 @pytest.fixture(autouse=True)
@@ -27,286 +70,87 @@ def cleanup_cuda():
     gc.collect()
 
 
-def create_small_gemma2_tl_config():
-    """Small Gemma-2-shaped config: gated GELU(tanh) MLP, pre+post norms, softcaps."""
-    return HookedTransformerConfig.from_dict(
-        {
-            "n_layers": 2,
-            "d_model": 8,
-            "n_ctx": 64,
-            "d_head": 4,
-            "model_name": "gemma-2-2b",
-            "n_heads": 2,
-            "d_mlp": 16,
-            "act_fn": "gelu_pytorch_tanh",
-            "d_vocab": 16,
-            "eps": 1e-06,
-            "use_attn_result": False,
-            "use_attn_scale": True,
-            "attn_scale": np.float64(16.0),
-            "use_local_attn": True,
-            "original_architecture": "Gemma2ForCausalLM",
-            "tokenizer_name": "gpt2",
-            "window_size": 4096,
-            "attn_types": ["global", "local"],
-            "normalization_type": "RMSPre",
-            "device": get_default_device(),
-            "attention_dir": "causal",
-            "positional_embedding_type": "rotary",
-            "final_rms": True,
-            "d_vocab_out": 16,
-            "rotary_dim": 4,
-            "use_hook_tokens": False,
-            "gated_mlp": True,
-            "default_prepend_bos": True,
-            "dtype": torch.float32,
-            "tokenizer_prepends_bos": True,
-            "n_key_value_heads": 2,
-            "rotary_base": 10000.0,
-            "use_normalization_before_and_after": True,
-            "attn_scores_soft_cap": 50.0,
-            "output_logits_soft_cap": 0.0,
-        }
-    )
+TOKENS = torch.tensor([0, 3, 4, 3, 2])
 
 
-def create_small_llama_tl_config():
-    """Small Llama-shaped config: gated SiLU MLP, RMSNorm, rotary."""
-    return HookedTransformerConfig.from_dict(
-        {
-            "n_layers": 2,
-            "d_model": 8,
-            "n_ctx": 64,
-            "d_head": 4,
-            "model_name": "llama-3.1-8b",
-            "n_heads": 2,
-            "d_mlp": 16,
-            "act_fn": "silu",
-            "d_vocab": 16,
-            "eps": 1e-06,
-            "use_attn_result": False,
-            "use_attn_scale": True,
-            "original_architecture": "LlamaForCausalLM",
-            "tokenizer_name": "gpt2",
-            "normalization_type": "RMSPre",
-            "device": get_default_device(),
-            "attention_dir": "causal",
-            "positional_embedding_type": "rotary",
-            "final_rms": True,
-            "d_vocab_out": 16,
-            "rotary_dim": 4,
-            "gated_mlp": True,
-            "default_prepend_bos": True,
-            "dtype": torch.float32,
-            "tokenizer_prepends_bos": True,
-            "n_key_value_heads": 2,
-            "rotary_base": 10000.0,
-        }
-    )
+def mlp_cache(model, tokens):
+    """Post- and pre-activations of the original MLPs, BOS position zeroed."""
+    _, cache = model.run_with_cache(tokens)
+    layers = range(model.cfg.n_layers)
+    post = torch.stack([cache[f"blocks.{i}.mlp.old_mlp.hook_post"][0] for i in layers])
+    pre = torch.stack([cache[f"blocks.{i}.mlp.old_mlp.hook_pre_linear"][0] for i in layers])
+    post[:, 0] = 0
+    pre[:, 0] = 0
+    return post, pre
 
 
-def create_small_qwen3_tl_config():
-    """Small Qwen-3-shaped config: gated SiLU MLP, RMSNorm, QK-norm."""
-    config_dict = {
-        "n_layers": 2,
-        "d_model": 8,
-        "n_ctx": 64,
-        "d_head": 4,
-        "model_name": "qwen3-0.6b",
-        "n_heads": 2,
-        "d_mlp": 16,
-        "act_fn": "silu",
-        "d_vocab": 16,
-        "eps": 1e-06,
-        "use_attn_result": False,
-        "use_attn_scale": True,
-        "original_architecture": "Qwen3ForCausalLM",
-        "tokenizer_name": "gpt2",
-        "normalization_type": "RMSPre",
-        "device": get_default_device(),
-        "attention_dir": "causal",
-        "positional_embedding_type": "rotary",
-        "final_rms": True,
-        "d_vocab_out": 16,
-        "rotary_dim": 4,
-        "gated_mlp": True,
-        "default_prepend_bos": True,
-        "dtype": torch.float32,
-        "tokenizer_prepends_bos": True,
-        "n_key_value_heads": 2,
-        "rotary_base": 10000.0,
-        "use_qk_norm": True,
-    }
-    return HookedTransformerConfig.from_dict(config_dict)
-
-
-CONFIG_FACTORIES = {
-    "gemma2": create_small_gemma2_tl_config,
-    "llama": create_small_llama_tl_config,
-    "qwen3": create_small_qwen3_tl_config,
-}
-
-MODEL_FAMILIES = list(CONFIG_FACTORIES)
-
-
-@pytest.mark.parametrize("family", MODEL_FAMILIES)
-def test_tl_mlp_dummy_transcoder_output_matches_mlp(family):
-    """Test that MLPDummyTranscoder produces the same output as the original MLP."""
-    cfg = CONFIG_FACTORIES[family]()
-    model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
-    assert isinstance(model, TransformerLensReplacementModel)
-    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
-
-    mlp = model.blocks[0].mlp.old_mlp  # type:ignore
-    transcoder = model.transcoders[0]
-
-    torch.manual_seed(42)
-    test_input = torch.randn(3, cfg.d_model, dtype=torch.float32, device=cfg.device)
-
+@pytest.mark.parametrize("family", CONFIGS)
+def test_transcoder_reproduces_mlp(family):
+    model = load_model(family)
+    _, cache = model.run_with_cache(TOKENS)
+    mlp_input = cache["blocks.0.mlp.hook_in"][0]
+    transcoder = transcoder_set(model)[0]
     with torch.no_grad():
-        if hasattr(mlp, "W_gate"):
-            gate_out = mlp.act_fn(test_input @ mlp.W_gate)  # type:ignore
-            hidden = gate_out * (test_input @ mlp.W_in)  # type:ignore
-        else:
-            hidden = mlp.act_fn(test_input @ mlp.W_in)  # type:ignore
-        mlp_output = hidden @ mlp.W_out + mlp.b_out  # type:ignore
-
-        transcoder_encoded = transcoder.encode(test_input)
-        transcoder_output = transcoder.decode(transcoder_encoded)
-
-    assert torch.allclose(transcoder_encoded, hidden, atol=1e-5)
-    assert torch.allclose(transcoder_output, mlp_output, atol=1e-5)
+        acts = transcoder.encode(mlp_input)
+    torch.testing.assert_close(acts, cache["blocks.0.mlp.old_mlp.hook_post"][0])
+    torch.testing.assert_close(transcoder.decode(acts), cache["blocks.0.mlp.hook_out"][0])
 
 
-@pytest.mark.parametrize("family", MODEL_FAMILIES)
-def test_tl_mlp_dummy_transcoder_encode_sparse(family):
-    """Test that encode_sparse produces correct sparse activations."""
-    cfg = CONFIG_FACTORIES[family]()
-    model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
-    assert isinstance(model, TransformerLensReplacementModel)
-    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
-
-    transcoder = model.transcoders[0]
-
+@pytest.mark.parametrize("family", CONFIGS)
+def test_sparse_matches_dense(family):
+    model = load_model(family)
+    transcoder = transcoder_set(model)[0]
     torch.manual_seed(42)
-    test_input = torch.randn(5, cfg.d_model, dtype=torch.float32, device=cfg.device)
-
+    x = torch.randn(5, transcoder.d_model, device=model.cfg.device)
     with torch.no_grad():
-        dense_acts = transcoder.encode(test_input)
-        sparse_acts, _ = transcoder.encode_sparse(test_input, zero_positions=slice(0, 1))
-
-        dense_acts_zeroed = dense_acts.clone()
-        dense_acts_zeroed[0] = 0
-        sparse_dense = sparse_acts.to_dense()
-
-    assert torch.allclose(sparse_dense, dense_acts_zeroed, atol=1e-5)
-
-
-@pytest.mark.parametrize("family", MODEL_FAMILIES)
-def test_tl_mlp_dummy_transcoder_decode_sparse(family):
-    """Test that decode_sparse produces correct reconstruction."""
-    cfg = CONFIG_FACTORIES[family]()
-    model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
-    assert isinstance(model, TransformerLensReplacementModel)
-    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
-
-    transcoder = model.transcoders[0]
-
-    torch.manual_seed(42)
-    test_input = torch.randn(5, cfg.d_model, dtype=torch.float32, device=cfg.device)
-
-    with torch.no_grad():
-        sparse_acts, _ = transcoder.encode_sparse(test_input, zero_positions=slice(0, 1))
+        dense = transcoder.encode(x)
+        dense[0] = 0
+        sparse_acts, _ = transcoder.encode_sparse(x, zero_positions=slice(0, 1))
         reconstruction, _ = transcoder.decode_sparse(sparse_acts)
-
-        dense_acts = transcoder.encode(test_input)
-        dense_acts[0] = 0
-        direct_decode = transcoder.decode(dense_acts)
-
-    assert torch.allclose(reconstruction, direct_decode, atol=1e-5)
+    torch.testing.assert_close(sparse_acts.to_dense(), dense)
+    torch.testing.assert_close(reconstruction, transcoder.decode(dense))
 
 
-@pytest.mark.parametrize("family", MODEL_FAMILIES)
-def test_tl_mlp_get_activations(family):
-    """Test that get_activations works correctly with MLP transcoders."""
-    cfg = CONFIG_FACTORIES[family]()
-    model = ReplacementModel.from_config(cfg, MLP_NO_THRESHOLD, backend="transformerlens")
-    assert isinstance(model, TransformerLensReplacementModel)
-
-    type(model.tokenizer).all_special_ids = property(lambda self: [0])  # type:ignore
-
-    s = torch.tensor([0, 3, 4, 3, 2])
-
-    logits, activation_cache = model.get_activations(s)
-
-    assert logits.shape[0] == 1
-    assert logits.shape[1] == len(s)
-    assert logits.shape[2] == cfg.d_vocab
-
-    assert activation_cache.shape[0] == cfg.n_layers
-    assert activation_cache.shape[1] == len(s)
-    assert activation_cache.shape[2] == cfg.d_mlp
-
-    assert not torch.isnan(activation_cache).any()
-    assert not torch.isinf(activation_cache).any()
-    assert (activation_cache[:, 0] == 0).all()
-
-    _, cache = model.run_with_cache(s)
-
-    tl_activation_cache = torch.stack(
-        [
-            cache[f"blocks.{layer}.mlp.old_mlp.hook_post"].squeeze(0)
-            for layer in range(model.cfg.n_layers)
-        ]
-    )
-    pre_act_hook = (
-        "blocks.{layer}.mlp.old_mlp.hook_pre_linear"
-        if "blocks.0.mlp.old_mlp.hook_pre_linear" in cache
-        else "blocks.{layer}.mlp.old_mlp.hook_pre"
-    )
-    tl_pre_activation_cache = torch.stack(
-        [cache[pre_act_hook.format(layer=layer)].squeeze(0) for layer in range(model.cfg.n_layers)]
-    )
-    _, pre_activation_cache = model.get_activations(s, apply_activation_function=False)
-
-    tl_activation_cache[:, 0] = 0
-    tl_pre_activation_cache[:, 0] = 0
-
-    assert torch.allclose(activation_cache, tl_activation_cache)
-    assert torch.allclose(pre_activation_cache, tl_pre_activation_cache)
+@pytest.mark.parametrize("family", CONFIGS)
+def test_get_activations(family):
+    model = load_model(family)
+    type(model.tokenizer).all_special_ids = property(lambda self: [0])  # type: ignore
+    _, acts = model.get_activations(TOKENS)
+    _, pre_acts = model.get_activations(TOKENS, apply_activation_function=False)
+    expected_acts, expected_pre = mlp_cache(model, TOKENS)
+    torch.testing.assert_close(acts, expected_acts)
+    torch.testing.assert_close(pre_acts, expected_pre)
 
 
-@pytest.mark.parametrize("family", MODEL_FAMILIES)
-def test_tl_mlp_dummy_transcoder_activation_topk(family):
-    """activation_topk keeps exactly the k largest-|a| neurons per position (TL backend)."""
-    k = 4
-    cfg = CONFIG_FACTORIES[family]()
-    model = ReplacementModel.from_config(
-        cfg,
-        MLPTranscoderConfig(activation_threshold=None, activation_topk=k),
-        backend="transformerlens",
-    )
-    assert isinstance(model, TransformerLensReplacementModel)
-    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
-    transcoder = model.transcoders[0]
-    assert isinstance(transcoder, MLPDummyTranscoder)
-    assert transcoder.activation_topk == k
-
+@pytest.mark.parametrize("family", CONFIGS)
+def test_activation_paths_agree_with_topk(family):
+    """encode, encode_sparse and the set-level activation function apply the same top-k."""
+    model = load_model(family, activation_topk=4)
+    transcoder = transcoder_set(model)[0]
     torch.manual_seed(0)
-    test_input = torch.randn(5, cfg.d_model, dtype=torch.float32, device=get_default_device())
-
+    x = torch.randn(5, transcoder.d_model, device=model.cfg.device)
     with torch.no_grad():
-        gated = transcoder.encode(test_input)
-        transcoder.activation_topk = None
-        ungated = transcoder.encode(test_input)
-        transcoder.activation_topk = k
+        acts = transcoder.encode(x)
+        assert ((acts != 0).sum(-1) == 4).all()
 
-    # exactly k survivors per position (random floats: no |a| ties), values untouched
-    assert ((gated != 0).sum(dim=-1) == k).all()
-    survivor_mask = gated != 0
-    assert torch.equal(gated[survivor_mask], ungated[survivor_mask])
-    # every survivor is at least as large in |a| as every casualty
-    inf = torch.tensor(torch.inf, device=gated.device)
-    min_kept = torch.where(survivor_mask, gated.abs(), inf).amin(dim=-1)
-    max_dropped = torch.where(survivor_mask, -inf, ungated.abs()).amax(dim=-1)
-    assert (max_dropped <= min_kept).all()
+        pre_acts = transcoder.encode(x, apply_activation_function=False)
+        torch.testing.assert_close(
+            transcoder_set(model).apply_activation_function(0, pre_acts), acts
+        )
+
+        sparse_acts, _ = transcoder.encode_sparse(x, zero_positions=slice(0, 0))
+        torch.testing.assert_close(sparse_acts.to_dense(), acts)
+
+
+@pytest.mark.parametrize("family", CONFIGS)
+def test_relp(family):
+    """RelP on TransformerLens (plain activation functions): rows conserve activations."""
+    model = load_model(family, relp=True, half_rule=True)
+    transcoder = transcoder_set(model)[0]
+    assert transcoder.b_enc is not None
+    transcoder.b_enc.zero_()  # conservation needs no up bias
+    x = torch.randn(5, transcoder.d_model, device=model.cfg.device)
+    sparse_acts, encoders = transcoder.encode_sparse(x, zero_positions=slice(0, 0))
+    pos_idx, _ = sparse_acts.indices()
+    assert not encoders.requires_grad
+    torch.testing.assert_close((encoders * x[pos_idx]).sum(-1), sparse_acts.values())

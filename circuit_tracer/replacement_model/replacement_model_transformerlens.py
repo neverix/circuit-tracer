@@ -3,7 +3,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import contextmanager
 from functools import partial
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 import torch
 import torch.nn.functional as F
@@ -12,14 +12,13 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 from transformer_lens.hook_points import HookPoint
 
 from circuit_tracer.attribution.context_transformerlens import AttributionContext
-from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
-from circuit_tracer.transcoder import (
-    TranscoderSet,
-    CrossLayerTranscoder,
-    MLPDummyTranscoder,
-    MLPDummyTranscoderSet,
+from circuit_tracer.transcoder import TranscoderSet
+from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
+from circuit_tracer.transcoder.mlp_dummy_transcoder import (
+    MLPTranscoderConfig,
+    MLPWeights,
+    build_mlp_transcoder_set,
 )
-from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 
@@ -71,7 +70,7 @@ class ReplacementUnembed(nn.Module):
 
 
 class TransformerLensReplacementModel(HookedTransformer):
-    transcoders: TranscoderSet | CrossLayerTranscoder | MLPDummyTranscoderSet  # Support both types
+    transcoders: TranscoderSet | CrossLayerTranscoder  # Support both types
     feature_input_hook: str
     feature_output_hook: str
     skip_transcoder: bool
@@ -89,7 +88,7 @@ class TransformerLensReplacementModel(HookedTransformer):
 
         Args:
             config (HookedTransformerConfig): the config of the HookedTransformer
-            transcoders: The transcoder set, cross-layer transcoder, or MLP transcoder config
+            transcoders (TranscoderSet): The transcoder set with configuration
 
         Returns:
             TransformerLensReplacementModel: The loaded TransformerLensReplacementModel
@@ -103,8 +102,6 @@ class TransformerLensReplacementModel(HookedTransformer):
         cls,
         model_name: str,
         transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
-        device: torch.device | None = None,
-        dtype: torch.dtype = torch.float32,
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from the name of HookedTransformer and TranscoderSet
@@ -112,23 +109,15 @@ class TransformerLensReplacementModel(HookedTransformer):
         Args:
             model_name (str): the name of the pretrained HookedTransformer
             transcoders (TranscoderSet): The transcoder set with configuration
-            device (torch.device | None): Device to load the model on. If None, uses default.
-            dtype (torch.dtype): Data type for the model. Defaults to torch.float32.
-            **kwargs: Additional arguments passed to HookedTransformer.from_pretrained
 
         Returns:
             TransformerLensReplacementModel: The loaded TransformerLensReplacementModel
         """
-        if device is None:
-            device = get_default_device()
-
         model = super().from_pretrained(
             model_name,
             fold_ln=False,
             center_writing_weights=False,
             center_unembed=False,
-            device=device,
-            dtype=dtype,  # type: ignore
             **kwargs,
         )
 
@@ -141,7 +130,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         model_name: str,
         transcoder_set: str,
         device: torch.device | None = None,
-        dtype: torch.dtype = torch.float32,
+        dtype: torch.dtype | None = torch.float32,
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from model name and transcoder config
@@ -165,7 +154,10 @@ class TransformerLensReplacementModel(HookedTransformer):
         if device is None:
             device = get_default_device()
 
-        transcoders, _ = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)  # type: ignore
+        (
+            transcoders,
+            _,
+        ) = load_transcoder_from_hub(transcoder_set, device=device, dtype=dtype)  # type: ignore
 
         return cls.from_pretrained_and_transcoders(
             model_name,
@@ -175,74 +167,42 @@ class TransformerLensReplacementModel(HookedTransformer):
             **kwargs,
         )
 
-    def create_dummy_mlp_transcoders(
-        self,
-        activation_threshold: float | None,
-        scan_name: str | None = None,
-        activation_topk: int | None = None,
-        jacobian_encoders: bool = False,
-    ) -> MLPDummyTranscoderSet:
-        transcoders = {}
-        for layer in range(self.cfg.n_layers):
-            mlp: nn.Module = self.blocks[layer].mlp  # type: ignore
-            # TransformerLens W_in is (d_model, d_mlp), we need (d_mlp, d_model)
-            W_enc: torch.Tensor = mlp.W_in.T  # type: ignore
-            # TransformerLens W_out is (d_mlp, d_model), which matches our convention
-            W_dec: torch.Tensor = mlp.W_out  # type: ignore
-
-            b_enc: torch.Tensor | None = getattr(mlp, "b_in", None)  # type: ignore
-            b_dec: torch.Tensor | None = getattr(mlp, "b_out", None)  # type: ignore
-
-            if hasattr(mlp, "W_gate"):
-                # TransformerLens W_gate is (d_model, d_mlp), we need (d_mlp, d_model)
-                W_gate = mlp.W_gate.T
-                act_fn = GatedActivationFunction(W_gate, mlp.act_fn)
-            else:
-                act_fn: nn.Module = mlp.act_fn  # type: ignore
-            transcoders[layer] = MLPDummyTranscoder(
-                W_enc,
-                b_enc,
-                W_dec,
-                b_dec,
-                act_fn,
-                layer,
-                activation_threshold,
-                activation_topk,
-                jacobian_encoders,
+    def _mlp_weights(self) -> list[MLPWeights]:
+        # TransformerLens stores W_in, W_gate as (d_model, d_mlp) and W_out as (d_mlp, d_model)
+        weights = []
+        for block in self.blocks:
+            mlp: Any = block.mlp
+            weights.append(
+                MLPWeights(
+                    W_up=mlp.W_in.T,
+                    b_up=mlp.b_in,
+                    W_down=mlp.W_out,
+                    b_down=mlp.b_out,
+                    W_gate=mlp.W_gate.T if hasattr(mlp, "W_gate") else None,
+                    act_fn=mlp.act_fn,
+                )
             )
-
-        return MLPDummyTranscoderSet(
-            transcoders,
-            feature_input_hook="mlp.hook_in",
-            feature_output_hook="mlp.hook_out",
-            scan_name=scan_name,
-        )
+        return weights
 
     def _configure_replacement_model(
         self, transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig
     ):
         self.backend = "transformerlens"
         if isinstance(transcoder_set, MLPTranscoderConfig):
-            transcoders = self.create_dummy_mlp_transcoders(
-                transcoder_set.activation_threshold,
-                scan_name=transcoder_set.scan_name,
-                activation_topk=transcoder_set.activation_topk,
-                jacobian_encoders=transcoder_set.jacobian_encoders,
-            )
+            transcoder_set = build_mlp_transcoder_set(self._mlp_weights(), transcoder_set)
         else:
-            transcoders = transcoder_set
-            transcoders.to(self.cfg.device, self.cfg.dtype)
+            transcoder_set.to(self.cfg.device, self.cfg.dtype)
 
         # special case to zero out <bos><start_of_turn>user\n for gemmascope 2 (-it) transcoders
         gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
         self.zero_positions = slice(0, 4) if gemma_3_it else slice(0, 1)
 
-        self.transcoders = transcoders
-        self.feature_input_hook = transcoders.feature_input_hook
-        self.original_feature_output_hook = transcoders.feature_output_hook
-        self.feature_output_hook = transcoders.feature_output_hook + ".hook_out_grad"
-        self.skip_transcoder = transcoders.skip_connection
-        self.scan_name = transcoders.scan_name
+        self.transcoders = transcoder_set
+        self.feature_input_hook = transcoder_set.feature_input_hook
+        self.original_feature_output_hook = transcoder_set.feature_output_hook
+        self.feature_output_hook = transcoder_set.feature_output_hook + ".hook_out_grad"
+        self.skip_transcoder = transcoder_set.skip_connection
+        self.scan_name = transcoder_set.scan_name
 
         for block in self.blocks:
             block.mlp = ReplacementMLP(block.mlp)  # type: ignore
@@ -280,10 +240,7 @@ class TransformerLensReplacementModel(HookedTransformer):
         self.hook_embed.add_hook(enable_gradient, is_permanent=True)  # type: ignore
 
     def _configure_skip_connection(
-        self,
-        block,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPDummyTranscoderSet,
-        layer: int,
+        self, block, transcoders: TranscoderSet | CrossLayerTranscoder, layer: int
     ):
         cached = {}
 
@@ -683,8 +640,7 @@ class TransformerLensReplacementModel(HookedTransformer):
             n_pos = 1
         elif (freeze_attention or constrained_layers) and interventions:
             original_activations, freeze_hooks = self.setup_intervention_with_freeze(
-                inputs,
-                constrained_layers=constrained_layers,
+                inputs, constrained_layers=constrained_layers
             )
             n_pos = original_activations.size(1)
         else:

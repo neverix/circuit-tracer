@@ -13,7 +13,10 @@ from circuit_tracer.attribution.attribute_nnsight import attribute
 from circuit_tracer.replacement_model.replacement_model_nnsight import (
     NNSightReplacementModel,
 )
-from circuit_tracer.transcoder import SingleLayerTranscoder, TranscoderSet
+from circuit_tracer.replacement_model.replacement_model_transformerlens import (
+    TransformerLensReplacementModel,
+)
+from circuit_tracer.transcoder import MLPTranscoderConfig, SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 
 gemma_2_config_dict = {
@@ -178,7 +181,7 @@ def verify_token_and_error_edges(
 
 
 def verify_feature_edges(
-    model: NNSightReplacementModel,
+    model: NNSightReplacementModel | TransformerLensReplacementModel,
     graph: Graph,
     n_samples: int = 100,
     act_atol=5e-4,
@@ -194,6 +197,9 @@ def verify_feature_edges(
 
     logits, activation_cache = model.get_activations(s, apply_activation_function=False)
     logits = logits.squeeze(0)
+    # interventions set post-activation values (equal to pre-activations for active JumpReLU
+    # features, but not for MLP neurons)
+    _, post_activation_cache = model.get_activations(s, apply_activation_function=True)
 
     relevant_activations = activation_cache[
         active_features[:, 0], active_features[:, 1], active_features[:, 2]
@@ -238,13 +244,23 @@ def verify_feature_edges(
     chosen_nodes = random_order[:n_samples]
     for chosen_node in tqdm(chosen_nodes):
         layer, pos, feature_idx = active_features[chosen_node]
-        old_activation = activation_cache[layer, pos, feature_idx]
+        old_activation = post_activation_cache[layer, pos, feature_idx]
         new_activation = old_activation * 2
         expected_effects = adjacency_matrix[:, chosen_node]
         verify_intervention(expected_effects, layer, pos, feature_idx, new_activation)  # type: ignore
 
 
-def load_dummy_gemma_model(cfg: AutoConfig) -> NNSightReplacementModel:
+def load_dummy_gemma_model(cfg: AutoConfig, mlp_neurons: bool = False) -> NNSightReplacementModel:
+    if mlp_neurons:
+        model = ReplacementModel.from_config(
+            cfg, MLPTranscoderConfig(activation_threshold=None), backend="nnsight"
+        )
+        assert isinstance(model, NNSightReplacementModel)
+        for _, param in model.named_parameters():
+            nn.init.uniform_(param, a=-1, b=1)
+        model.tokenizer.pad_token = model.tokenizer.eos_token  # type:ignore
+        return model
+
     transcoders = {
         layer_idx: SingleLayerTranscoder(
             cfg.hidden_size,  # type: ignore
@@ -276,7 +292,8 @@ def load_dummy_gemma_model(cfg: AutoConfig) -> NNSightReplacementModel:
     return model
 
 
-def test_small_gemma_model():
+@pytest.mark.parametrize("mlp_neurons", [False, True], ids=["jumprelu", "mlp_neurons"])
+def test_small_gemma_model(mlp_neurons):
     s = torch.tensor([0, 3, 4, 3, 2, 5, 3, 8])
     gemma_small_config = gemma_2_config
     gemma_small_config.num_hidden_layers = 2
@@ -288,7 +305,7 @@ def test_small_gemma_model():
     gemma_small_config.num_key_value_heads = 2
     gemma_small_config.final_logit_softcapping = None  # type: ignore
     gemma_small_config.torch_dtype = "float32"
-    model = load_dummy_gemma_model(gemma_small_config)  # type: ignore
+    model = load_dummy_gemma_model(gemma_small_config, mlp_neurons)  # type: ignore
 
     # Save original property to restore later
     tokenizer_class = type(model.tokenizer)
@@ -304,7 +321,8 @@ def test_small_gemma_model():
         tokenizer_class.all_special_ids = original_all_special_ids  # type:ignore
 
 
-def test_large_gemma_model():
+@pytest.mark.parametrize("mlp_neurons", [False, True], ids=["jumprelu", "mlp_neurons"])
+def test_large_gemma_model(mlp_neurons):
     s = torch.tensor([0, 113, 24, 53, 27])
     gemma_large_cfg = gemma_2_config
     gemma_large_cfg.num_hidden_layers = 16
@@ -316,7 +334,7 @@ def test_large_gemma_model():
     gemma_large_cfg.num_key_value_heads = 16
     gemma_large_cfg.final_logit_softcapping = None  # type:ignore
     gemma_large_cfg.torch_dtype = "float64"
-    model = load_dummy_gemma_model(gemma_large_cfg)  # type: ignore
+    model = load_dummy_gemma_model(gemma_large_cfg, mlp_neurons)  # type: ignore
 
     # Save original property to restore later
     tokenizer_class = type(model.tokenizer)
@@ -347,6 +365,20 @@ def test_gemma_2_2b():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_gemma_2_2b_mlp_neurons():
+    s = "The National Digital Analytics Group (ND"
+    model = ReplacementModel.from_pretrained_and_transcoders(
+        "google/gemma-2-2b", MLPTranscoderConfig(activation_threshold=0.25), backend="nnsight"
+    )
+    assert isinstance(model, NNSightReplacementModel)
+    graph = attribute(s, model)
+
+    with model.zero_softcap():
+        verify_token_and_error_edges(model, graph)
+        verify_feature_edges(model, graph)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_gemma_2_2b_clt():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained(
@@ -365,7 +397,7 @@ def test_gemma_2_2b_clt():
 
 if __name__ == "__main__":
     torch.manual_seed(42)
-    test_small_gemma_model()
-    test_large_gemma_model()
+    test_small_gemma_model(mlp_neurons=False)
+    test_large_gemma_model(mlp_neurons=False)
     test_gemma_2_2b()
     test_gemma_2_2b_clt()  # This will pass, but is slow to run

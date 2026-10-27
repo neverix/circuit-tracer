@@ -12,14 +12,13 @@ from nnsight.intervention.barrier import Barrier
 from nnsight import TransformersModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 
 from circuit_tracer.attribution.context_nnsight import AttributionContext
-from circuit_tracer.replacement_model.replacement_model import MLPTranscoderConfig
-from circuit_tracer.transcoder import (
-    TranscoderSet,
-    CrossLayerTranscoder,
-    MLPDummyTranscoder,
-    MLPDummyTranscoderSet,
+from circuit_tracer.transcoder import TranscoderSet
+from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
+from circuit_tracer.transcoder.mlp_dummy_transcoder import (
+    MLPTranscoderConfig,
+    MLPWeights,
+    build_mlp_transcoder_set,
 )
-from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
 from circuit_tracer.utils.tl_nnsight_mapping import (
@@ -54,7 +53,7 @@ class EnvoyWrapper:
 
 class NNSightReplacementModel(TransformersModel):
     d_transcoder: int
-    transcoders: TranscoderSet | CrossLayerTranscoder | MLPDummyTranscoderSet
+    transcoders: TranscoderSet | CrossLayerTranscoder
     feature_input_locs: list[nn.Module]  # type: ignore
     feature_output_locs: list[nn.Module]  # type: ignore
     attention_locs: list[nn.Module]  # type: ignore
@@ -102,7 +101,7 @@ class NNSightReplacementModel(TransformersModel):
         cls,
         model_name: str,
         transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
-        device: torch.device | None = None,
+        device: torch.device | str = torch.device("cuda"),
         dtype: torch.dtype = torch.float32,
         **kwargs,
     ) -> "NNSightReplacementModel":
@@ -111,16 +110,10 @@ class NNSightReplacementModel(TransformersModel):
         Args:
             model_name (str): the name of the pretrained HookedTransformer
             transcoders (TranscoderSet): The transcoder set with configuration
-            device (torch.device | None): Device to load the model on. If None, uses default.
-            dtype (torch.dtype): Data type for the model. Defaults to torch.float32.
-            **kwargs: Additional arguments passed to TransformersModel.__init__
 
         Returns:
             NNSightReplacementModel: The loaded NNSightReplacementModel
         """
-        if device is None:
-            device = get_default_device()
-
         # The goal is to build a ReplacementModel instance *using* the parent
         # TransformersModel.__init__.  Since we are in a `@classmethod`, we don't yet have
         # an object (`self`) to pass to `super().__init__`.  We create an _uninitialised_
@@ -160,7 +153,6 @@ class NNSightReplacementModel(TransformersModel):
             dispatch=True,
             dtype=dtype,
             attn_implementation="eager",
-            **kwargs,
         )
 
         model._configure_replacement_model(transcoders)
@@ -197,56 +189,6 @@ class NNSightReplacementModel(TransformersModel):
             **kwargs,
         )
 
-    def create_dummy_mlp_transcoders(
-        self,
-        activation_threshold: float | None,
-        scan_name: str | None = None,
-        relp: bool = False,
-        half_rule: bool | None = None,
-        activation_topk: int | None = None,
-        jacobian_encoders: bool = False,
-    ) -> MLPDummyTranscoderSet:
-        nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
-        transcoders = {}
-        for layer in range(self.cfg.n_layers):
-            mlp: nn.Module = self._resolve_attr(self, nnsight_config.mlp.format(layer=layer))  # type: ignore
-            if not hasattr(mlp, "up_proj"):
-                raise NotImplementedError(
-                    f"MLP dummy transcoders require a dense MLP with up_proj/down_proj; "
-                    f"{type(mlp).__name__} at layer {layer} has none (MoE models such as "
-                    f"GPT-OSS are not supported yet)"
-                )
-            W_enc: torch.Tensor = mlp.up_proj.weight  # type: ignore
-            # Transpose to get (d_mlp, d_model) to match SingleLayerTranscoder convention
-            W_dec: torch.Tensor = mlp.down_proj.weight.T  # type: ignore
-
-            b_enc: torch.Tensor | None = getattr(mlp.up_proj, "bias", None)  # type: ignore
-            b_dec: torch.Tensor | None = getattr(mlp.down_proj, "bias", None)  # type: ignore
-
-            if hasattr(mlp, "gate_proj"):
-                W_gate = mlp.gate_proj.weight  # type: ignore
-                act_fn = GatedActivationFunction(W_gate, mlp.act_fn, relp=relp, half_rule=half_rule)
-            else:
-                act_fn: nn.Module = mlp.act_fn  # type: ignore
-            transcoders[layer] = MLPDummyTranscoder(
-                W_enc,
-                b_enc,
-                W_dec,
-                b_dec,
-                act_fn,
-                layer,
-                activation_threshold,
-                activation_topk,
-                jacobian_encoders,
-            )
-
-        return MLPDummyTranscoderSet(
-            transcoders,
-            feature_input_hook="mlp.hook_in",
-            feature_output_hook="mlp.hook_out",
-            scan_name=scan_name,
-        )
-
     @staticmethod
     def _resolve_attr(root: object, attr_path: str):
         """Resolves a dotted attribute path that can additionally contain Python-style
@@ -274,6 +216,30 @@ class NNSightReplacementModel(TransformersModel):
                 current = getattr(current, token)
         return current
 
+    def _mlp_weights(self) -> list[MLPWeights]:
+        mapping = get_mapping(self.config.architectures[0])  # type: ignore
+        weights = []
+        for layer in range(self.cfg.n_layers):
+            mlp = self._resolve_attr(self, mapping.mlp.format(layer=layer))._module  # type: ignore
+            if not hasattr(mlp, "up_proj"):
+                raise NotImplementedError(
+                    f"MLP neuron features need a dense MLP with up_proj/down_proj; "
+                    f"{type(mlp).__name__} at layer {layer} has none (MoE MLPs such as "
+                    f"GPT-OSS are not supported yet)"
+                )
+            gate_proj = getattr(mlp, "gate_proj", None)
+            weights.append(
+                MLPWeights(
+                    W_up=mlp.up_proj.weight,
+                    b_up=mlp.up_proj.bias,
+                    W_down=mlp.down_proj.weight.T,
+                    b_down=mlp.down_proj.bias,
+                    W_gate=None if gate_proj is None else gate_proj.weight,
+                    act_fn=mlp.act_fn,
+                )
+            )
+        return weights
+
     def _configure_replacement_model(
         self,
         transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
@@ -283,24 +249,16 @@ class NNSightReplacementModel(TransformersModel):
         self.cfg = convert_nnsight_config_to_transformerlens(self.config)
 
         if isinstance(transcoder_set, MLPTranscoderConfig):
-            transcoders = self.create_dummy_mlp_transcoders(
-                transcoder_set.activation_threshold,
-                scan_name=transcoder_set.scan_name,
-                relp=transcoder_set.relp,
-                half_rule=transcoder_set.half_rule,
-                activation_topk=transcoder_set.activation_topk,
-                jacobian_encoders=transcoder_set.jacobian_encoders,
-            )
+            transcoder_set = build_mlp_transcoder_set(self._mlp_weights(), transcoder_set)
         else:
-            transcoders = transcoder_set
-            transcoders.to(self.device, self.dtype)
+            transcoder_set.to(self.device, self.dtype)
 
         # special case to zero out <bos><start_of_turn>user\n for gemmascope 2 (-it) transcoders
         gemma_3_it = "gemma-3" in self.cfg.model_name and self.cfg.model_name.endswith("-it")
         self.zero_positions = slice(0, 4) if gemma_3_it else slice(0, 1)
 
-        self.transcoders = transcoders
-        self.skip_transcoder = transcoders.skip_connection
+        self.transcoders = transcoder_set
+        self.skip_transcoder = transcoder_set.skip_connection
 
         # ------------------------------------------------------------------
         # Instead of eagerly resolving hook locations here (which can fail
@@ -312,10 +270,10 @@ class NNSightReplacementModel(TransformersModel):
         nnsight_config = get_mapping(self.config.architectures[0])  # type: ignore
 
         self._feature_input_pattern, self._feature_input_io = nnsight_config.feature_hook_mapping[
-            transcoders.feature_input_hook
+            transcoder_set.feature_input_hook
         ]
         self._feature_output_pattern, _ = nnsight_config.feature_hook_mapping[
-            transcoders.feature_output_hook
+            transcoder_set.feature_output_hook
         ]
 
         self._attention_pattern = nnsight_config.attention_location_pattern
@@ -331,7 +289,7 @@ class NNSightReplacementModel(TransformersModel):
         self.unembed_weight = cast(
             torch.Tensor, self._resolve_attr(self, nnsight_config.unembed_weight)
         )
-        self.scan_name = transcoders.scan_name
+        self.scan_name = transcoder_set.scan_name
 
         # Make sure the replacement model is entirely frozen by default.
         for param in self.parameters():
@@ -621,9 +579,7 @@ class NNSightReplacementModel(TransformersModel):
         )
 
     def setup_intervention_with_freeze(
-        self,
-        inputs: str | torch.Tensor,
-        constrained_layers: range | None = None,
+        self, inputs: str | torch.Tensor, constrained_layers: range | None = None
     ) -> tuple[torch.Tensor, list[Callable]]:
         """Sets up an intervention with either frozen attention + LayerNorm(default) or frozen
         attention, LayerNorm, and MLPs, for constrained layers
@@ -859,8 +815,7 @@ class NNSightReplacementModel(TransformersModel):
 
         if (freeze_attention or constrained_layers) and interventions:
             original_activations, freeze_fns = self.setup_intervention_with_freeze(
-                inputs,
-                constrained_layers=constrained_layers,
+                inputs, constrained_layers=constrained_layers
             )
         else:
             original_activations, freeze_fns = None, []
@@ -988,8 +943,7 @@ class NNSightReplacementModel(TransformersModel):
 
         if (freeze_attention or constrained_layers) and interventions:
             original_activations, freeze_fns = self.setup_intervention_with_freeze(
-                inputs,
-                constrained_layers=constrained_layers,
+                inputs, constrained_layers=constrained_layers
             )
         else:
             original_activations, freeze_fns = None, []

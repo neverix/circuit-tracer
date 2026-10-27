@@ -125,7 +125,8 @@ class SingleLayerTranscoder(nn.Module):
         return self.activation_function(pre_acts)
 
     def decode(self, acts, input_acts: torch.Tensor | None = None):
-        reconstruction = acts @ self.W_dec + self.b_dec
+        W_dec = self.W_dec
+        reconstruction = acts @ W_dec + self.b_dec
         if self.W_skip is not None:
             assert input_acts is not None, (
                 "Transcoder has skip connection but no input_acts were provided"

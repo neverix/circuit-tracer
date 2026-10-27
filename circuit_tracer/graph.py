@@ -88,14 +88,6 @@ class Graph:
         self.scan_name = scan_name
         self.selected_features = selected_features
         self.activation_values = activation_values
-        # Default: n_layers * n_pos error nodes. Set to 0 for error-free graphs.
-        self._n_error_nodes = None
-
-    @property
-    def n_error_nodes(self):
-        if self._n_error_nodes is not None:
-            return self._n_error_nodes
-        return self.n_pos * self.cfg.n_layers
 
     def to(self, device):
         """Send all relevant tensors to the device (cpu, cuda, etc.)
@@ -158,7 +150,6 @@ class Graph:
             "selected_features": self.selected_features,
             "activation_values": self.activation_values,
             "scan_name": self.scan_name,
-            "_n_error_nodes": self._n_error_nodes,
         }
         torch.save(d, path)
 
@@ -187,19 +178,12 @@ class Graph:
             d["logit_targets"] = [
                 LogitTarget(token_str="", vocab_idx=int(idx)) for idx in lt.tolist()
             ]
-        n_error_nodes = d.pop("_n_error_nodes", None)
-        g = Graph(**d)
-        g._n_error_nodes = n_error_nodes
-        return g
+        return Graph(**d)
 
 
 def normalize_matrix(matrix: torch.Tensor) -> torch.Tensor:
-    # abs() allocates a fresh tensor, so the in-place div_ below cannot touch the
-    # caller's matrix; in-place saves one adjacency-sized allocation.
     normalized = matrix.abs()
-    row_sums = normalized.sum(dim=1, keepdim=True).clamp_(min=1e-10)
-    normalized.div_(row_sums)
-    return normalized
+    return normalized / normalized.sum(dim=1, keepdim=True).clamp(min=1e-10)
 
 
 def compute_influence(A: torch.Tensor, logit_weights: torch.Tensor, max_iter: int = 1000):
@@ -235,31 +219,48 @@ def compute_edge_influence(pruned_matrix: torch.Tensor, logit_weights: torch.Ten
 
 
 def find_threshold(scores: torch.Tensor, threshold: float):
-    # Find score threshold that keeps the desired fraction of total influence.
-    # Use quantile for large tensors (torch.sort fails beyond INT_MAX elements).
-    if scores.numel() <= 2**31 - 1:
-        sorted_scores = torch.sort(scores, descending=True).values
-        cumulative_score = torch.cumsum(sorted_scores, dim=0) / torch.sum(sorted_scores)
-        threshold_index: int = int(torch.searchsorted(cumulative_score, threshold).item())
-        # make sure we don't go past the last non-zero score (only really happens at threshold=1.0,
-        # when cumsum and sum round differently); a zero cut-off would keep every (non-)edge
-        n_nonzero = int((sorted_scores > 0).sum().item())
-        threshold_index = min(threshold_index, max(n_nonzero - 1, 0))
-        return sorted_scores[threshold_index]
-    else:
-        # Binary search on score value — no sorting needed, no GPU→CPU sync in loop.
-        total = scores.sum().clamp(min=1e-10)
-        lo = scores.new_zeros(())
-        hi = scores.max()
-        threshold_t = scores.new_tensor(threshold)
-        for _ in range(64):
-            mid = (lo + hi) / 2
-            frac = scores[scores >= mid].sum() / total
-            lo = torch.where(frac >= threshold_t, mid, lo)
-            hi = torch.where(frac >= threshold_t, hi, mid)
-        # as above: never cut below the smallest non-zero score
-        positive = scores[scores > 0]
-        return torch.maximum(lo, positive.min()) if positive.numel() > 0 else lo
+    # Find score threshold that keeps the desired fraction of total influence
+    if scores.numel() > _MAX_SORT_NUMEL:
+        return _find_threshold_bisect(scores, threshold)
+    sorted_scores = torch.sort(scores, descending=True).values
+    cumulative_score = torch.cumsum(sorted_scores, dim=0) / torch.sum(sorted_scores)
+    threshold_index: int = int(torch.searchsorted(cumulative_score, threshold).item())
+    # make sure we don't go past the last non-zero score (only really happens at threshold=1.0,
+    # when cumsum and sum round differently); a zero cut-off would keep every (non-)edge
+    n_nonzero = int((sorted_scores > 0).sum().item())
+    threshold_index = min(threshold_index, max(n_nonzero - 1, 0))
+    return sorted_scores[threshold_index]
+
+
+# torch.sort fails beyond this many elements; neuron graphs can exceed it
+_MAX_SORT_NUMEL = 2**31 - 1
+
+
+def _find_threshold_bisect(
+    scores: torch.Tensor, threshold: float, n_steps: int = 64, chunk_size: int = 2**28
+) -> torch.Tensor:
+    """find_threshold without sorting, for tensors torch.sort cannot handle.
+
+    Bisects on the cut-off value. Chunked sums bound the extra memory, and the loop
+    has no host sync.
+    """
+    chunks = scores.flatten().split(chunk_size)
+
+    def kept(cut: torch.Tensor) -> torch.Tensor:
+        return torch.stack([torch.where(c >= cut, c, 0).sum() for c in chunks]).sum()
+
+    target = threshold * torch.stack([c.sum() for c in chunks]).sum()
+    max_score = torch.stack([c.max() for c in chunks]).max()
+    lo, hi = scores.new_zeros(()), max_score
+    for _ in range(n_steps):
+        mid = (lo + hi) / 2
+        keep_more = kept(mid) >= target
+        lo = torch.where(keep_more, mid, lo)
+        hi = torch.where(keep_more, hi, mid)
+
+    # As in the sort path: never cut below the smallest non-zero score
+    min_positive = torch.stack([torch.where(c > 0, c, torch.inf).min() for c in chunks]).min()
+    return torch.minimum(torch.maximum(lo, min_positive), max_score)
 
 
 class PruneResult(NamedTuple):
@@ -373,7 +374,7 @@ def compute_graph_scores(graph: Graph) -> tuple[float, float]:
     n_tokens = len(graph.input_tokens)
     n_features = len(graph.selected_features)
     error_start = n_features
-    error_end = error_start + graph.n_error_nodes
+    error_end = error_start + n_tokens * graph.cfg.n_layers
     token_end = error_end + n_tokens
 
     logit_weights = torch.zeros(
