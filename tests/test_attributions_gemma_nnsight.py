@@ -400,4 +400,5 @@ if __name__ == "__main__":
     test_small_gemma_model(mlp_neurons=False)
     test_large_gemma_model(mlp_neurons=False)
     test_gemma_2_2b()
+    test_gemma_2_2b_mlp_neurons()
     test_gemma_2_2b_clt()  # This will pass, but is slow to run

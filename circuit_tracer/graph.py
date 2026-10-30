@@ -258,9 +258,13 @@ def _find_threshold_bisect(
         lo = torch.where(keep_more, mid, lo)
         hi = torch.where(keep_more, hi, mid)
 
-    # As in the sort path: never cut below the smallest non-zero score
-    min_positive = torch.stack([torch.where(c > 0, c, torch.inf).min() for c in chunks]).min()
-    return torch.minimum(torch.maximum(lo, min_positive), max_score)
+    def smallest_at_least(value) -> torch.Tensor:
+        return torch.stack([torch.where(c >= value, c, torch.inf).min() for c in chunks]).min()
+
+    # As in the sort path, the cut-off is one of the scores and not zero
+    # (unless all scores are zero).
+    min_positive = smallest_at_least(torch.finfo(scores.dtype).tiny)
+    return torch.minimum(smallest_at_least(torch.maximum(lo, min_positive)), max_score)
 
 
 class PruneResult(NamedTuple):
