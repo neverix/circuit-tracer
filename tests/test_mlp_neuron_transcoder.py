@@ -1,11 +1,11 @@
-"""MLPDummyTranscoder without a model: thresholding and encoder vectors."""
+"""MLPNeuronTranscoder without a model: thresholding and encoder vectors."""
 
 import pytest
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from circuit_tracer.transcoder import MLPDummyTranscoder
+from circuit_tracer.transcoder import MLPNeuronTranscoder
 from circuit_tracer.transcoder.activation_functions import GatedActivationFunction
 
 D_MODEL, D_MLP, N_POS = 8, 16, 6
@@ -13,13 +13,14 @@ D_MODEL, D_MLP, N_POS = 8, 16, 6
 ACTIVATIONS = {"gelu_tanh": lambda: nn.GELU(approximate="tanh"), "silu": nn.SiLU}
 
 
-def make_transcoder(act, relp, half_rule=None, jacobian_encoders=False, bias=False, **kwargs):
+def make_transcoder(act, encoders, half_rule=None, bias=False, **kwargs):
     torch.manual_seed(123)
     W_up, W_gate, W_down = (torch.randn(D_MLP, D_MODEL) for _ in range(3))
     b_up = torch.randn(D_MLP) if bias else None
+    relp = encoders == "relp"
     act_fn = GatedActivationFunction(W_gate, ACTIVATIONS[act](), relp=relp, half_rule=half_rule)
-    transcoder = MLPDummyTranscoder(
-        W_up, b_up, W_down, None, act_fn, layer_idx=0, jacobian_encoders=jacobian_encoders, **kwargs
+    transcoder = MLPNeuronTranscoder(
+        W_up, b_up, W_down, None, act_fn, layer_idx=0, encoders=encoders, **kwargs
     )
     return transcoder, torch.randn(N_POS, D_MODEL)
 
@@ -42,14 +43,18 @@ def autograd_encoder_rows(transcoder, input_acts, pos_idx, feat_idx):
 
 @pytest.mark.parametrize("act", ACTIVATIONS)
 @pytest.mark.parametrize(
-    "relp,half_rule,bias",
-    [(True, False, False), (True, True, False), (True, True, True), (False, False, False)],
-    ids=["relp", "relp-half_rule", "relp-half_rule-bias", "exact"],
+    "encoders,half_rule,bias",
+    [
+        ("relp", False, False),
+        ("relp", True, False),
+        ("relp", True, True),
+        ("jacobian", False, False),
+        ("jacobian", True, True),
+    ],
+    ids=["relp", "relp-half_rule", "relp-half_rule-bias", "jacobian", "jacobian-half_rule-bias"],
 )
-def test_encoder_rows_match_autograd(act, relp, half_rule, bias):
-    transcoder, input_acts = make_transcoder(
-        act, relp, half_rule, jacobian_encoders=not relp, bias=bias
-    )
+def test_encoder_rows_match_autograd(act, encoders, half_rule, bias):
+    transcoder, input_acts = make_transcoder(act, encoders, half_rule, bias=bias)
     sparse_acts, encoders = transcoder.encode_sparse(input_acts, zero_positions=slice(0, 0))
     pos_idx, feat_idx = sparse_acts.indices()
     assert len(pos_idx) > N_POS * D_MLP // 2  # no threshold: only exact zeros drop out
@@ -59,17 +64,32 @@ def test_encoder_rows_match_autograd(act, relp, half_rule, bias):
 
 
 def test_default_encoders_are_up_rows():
-    transcoder, input_acts = make_transcoder("gelu_tanh", relp=False)
+    transcoder, input_acts = make_transcoder("gelu_tanh", "up")
     sparse_acts, encoders = transcoder.encode_sparse(input_acts)
     _, feat_idx = sparse_acts.indices()
     assert torch.equal(encoders, transcoder.W_enc[feat_idx])
 
 
 def test_no_active_neurons():
-    transcoder, input_acts = make_transcoder("gelu_tanh", relp=True, activation_threshold=1e6)
+    transcoder, input_acts = make_transcoder("gelu_tanh", "relp", activation_threshold=1e6)
     sparse_acts, encoders = transcoder.encode_sparse(input_acts)
     assert sparse_acts._nnz() == 0
     assert encoders.shape == (0, D_MODEL)
+
+
+@pytest.mark.parametrize("encoders,relp", [("jacobian", True), ("relp", False)])
+def test_encoders_must_match_activation_function(encoders, relp):
+    act_fn = GatedActivationFunction(torch.randn(D_MLP, D_MODEL), nn.SiLU(), relp=relp)
+    with pytest.raises(ValueError, match="needs a GatedActivationFunction"):
+        MLPNeuronTranscoder(
+            torch.randn(D_MLP, D_MODEL),
+            None,
+            torch.randn(D_MLP, D_MODEL),
+            None,
+            act_fn,
+            0,
+            encoders=encoders,
+        )
 
 
 def test_relp_accepts_activation_functions():
@@ -89,7 +109,7 @@ def test_relp_half_rule_conserves_activation(act):
 
     row . x = 0.5 * (act(g) * up + up * gate(g) * g) = act(g) * up, since act(g) = g * gate(g).
     """
-    transcoder, input_acts = make_transcoder(act, relp=True, half_rule=True)
+    transcoder, input_acts = make_transcoder(act, "relp", half_rule=True)
     sparse_acts, encoders = transcoder.encode_sparse(input_acts, zero_positions=slice(0, 0))
     pos_idx, _ = sparse_acts.indices()
     torch.testing.assert_close(
@@ -98,7 +118,7 @@ def test_relp_half_rule_conserves_activation(act):
 
 
 def test_threshold_and_topk():
-    transcoder = MLPDummyTranscoder(
+    transcoder = MLPNeuronTranscoder(
         torch.eye(6), None, torch.zeros(6, 6), None, nn.Identity(), layer_idx=0, activation_topk=3
     )
     x = torch.tensor([[3.0, -1.0, 0.5, 2.0, -4.0, 0.1]])

@@ -10,7 +10,7 @@ from circuit_tracer import ReplacementModel
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
-from circuit_tracer.transcoder import MLPDummyTranscoderSet, MLPTranscoderConfig
+from circuit_tracer.transcoder import MLPNeuronTranscoderSet, MLPNeuronConfig
 from circuit_tracer.utils import get_default_device
 
 TINY_DIMS = dict(
@@ -52,14 +52,15 @@ CONFIGS = {
 
 def load_model(family: str, **mlp_config) -> TransformerLensReplacementModel:
     cfg = HookedTransformerConfig(**TINY_DIMS, **CONFIGS[family], device=str(get_default_device()))
+    mlp_config.setdefault("activation_topk", None)
     mlp_config.setdefault("activation_threshold", None)
-    model = ReplacementModel.from_config(cfg, MLPTranscoderConfig(**mlp_config))
+    model = ReplacementModel.from_config(cfg, MLPNeuronConfig(**mlp_config))
     assert isinstance(model, TransformerLensReplacementModel)
     return model
 
 
-def transcoder_set(model: TransformerLensReplacementModel) -> MLPDummyTranscoderSet:
-    assert isinstance(model.transcoders, MLPDummyTranscoderSet)
+def transcoder_set(model: TransformerLensReplacementModel) -> MLPNeuronTranscoderSet:
+    assert isinstance(model.transcoders, MLPNeuronTranscoderSet)
     return model.transcoders
 
 
@@ -145,7 +146,7 @@ def test_activation_paths_agree_with_topk(family):
 @pytest.mark.parametrize("family", CONFIGS)
 def test_relp(family):
     """RelP on TransformerLens (plain activation functions): rows conserve activations."""
-    model = load_model(family, relp=True, half_rule=True)
+    model = load_model(family, encoders="relp", half_rule=True)
     transcoder = transcoder_set(model)[0]
     assert transcoder.b_enc is not None
     transcoder.b_enc.zero_()  # conservation needs no up bias

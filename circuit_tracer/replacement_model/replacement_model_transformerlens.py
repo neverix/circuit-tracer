@@ -14,8 +14,8 @@ from transformer_lens.hook_points import HookPoint
 from circuit_tracer.attribution.context_transformerlens import AttributionContext
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
-from circuit_tracer.transcoder.mlp_dummy_transcoder import (
-    MLPTranscoderConfig,
+from circuit_tracer.transcoder.mlp_neuron_transcoder import (
+    MLPNeuronConfig,
     MLPWeights,
     build_mlp_transcoder_set,
 )
@@ -81,7 +81,7 @@ class TransformerLensReplacementModel(HookedTransformer):
     def from_config(
         cls,
         config: HookedTransformerConfig,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig,
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from a given HookedTransformerConfig and TranscoderSet
@@ -101,7 +101,7 @@ class TransformerLensReplacementModel(HookedTransformer):
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig,
         **kwargs,
     ) -> "TransformerLensReplacementModel":
         """Create a TransformerLensReplacementModel from the name of HookedTransformer and TranscoderSet
@@ -185,10 +185,10 @@ class TransformerLensReplacementModel(HookedTransformer):
         return weights
 
     def _configure_replacement_model(
-        self, transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig
+        self, transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig
     ):
         self.backend = "transformerlens"
-        if isinstance(transcoder_set, MLPTranscoderConfig):
+        if isinstance(transcoder_set, MLPNeuronConfig):
             transcoder_set = build_mlp_transcoder_set(self._mlp_weights(), transcoder_set)
         else:
             transcoder_set.to(self.cfg.device, self.cfg.dtype)

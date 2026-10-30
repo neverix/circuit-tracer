@@ -18,7 +18,7 @@ from transformers import (
 
 from circuit_tracer import ReplacementModel
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
-from circuit_tracer.transcoder import MLPDummyTranscoderSet, MLPTranscoderConfig
+from circuit_tracer.transcoder import MLPNeuronTranscoderSet, MLPNeuronConfig
 from circuit_tracer.utils.tl_nnsight_mapping import get_mapping
 
 TINY_DIMS: dict[str, Any] = dict(
@@ -58,10 +58,9 @@ def load_model(family: str, **mlp_config) -> NNSightReplacementModel:
     config = make_config()
     config._name_or_path = "openai-community/gpt2"  # any ungated tokenizer
     config.architectures = [architecture]
+    mlp_config.setdefault("activation_topk", None)
     mlp_config.setdefault("activation_threshold", None)
-    model = ReplacementModel.from_config(
-        config, MLPTranscoderConfig(**mlp_config), backend="nnsight"
-    )
+    model = ReplacementModel.from_config(config, MLPNeuronConfig(**mlp_config), backend="nnsight")
     assert isinstance(model, NNSightReplacementModel)
     # the default init (std 0.02) makes neuron values ~1e-5, below assert_close's tolerance
     for param in model.parameters():
@@ -69,9 +68,9 @@ def load_model(family: str, **mlp_config) -> NNSightReplacementModel:
     return model
 
 
-def transcoder_set(model: NNSightReplacementModel) -> MLPDummyTranscoderSet:
+def transcoder_set(model: NNSightReplacementModel) -> MLPNeuronTranscoderSet:
     transcoders = model.transcoders._module  # type: ignore
-    assert isinstance(transcoders, MLPDummyTranscoderSet)
+    assert isinstance(transcoders, MLPNeuronTranscoderSet)
     return transcoders
 
 
@@ -188,5 +187,7 @@ def test_moe_mlp_unsupported():
     config.architectures = ["GptOssForCausalLM"]
     with pytest.raises(NotImplementedError, match="MoE"):
         ReplacementModel.from_config(
-            config, MLPTranscoderConfig(activation_threshold=None), backend="nnsight"
+            config,
+            MLPNeuronConfig(activation_topk=None, activation_threshold=None),
+            backend="nnsight",
         )

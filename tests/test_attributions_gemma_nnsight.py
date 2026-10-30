@@ -16,7 +16,7 @@ from circuit_tracer.replacement_model.replacement_model_nnsight import (
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
-from circuit_tracer.transcoder import MLPTranscoderConfig, SingleLayerTranscoder, TranscoderSet
+from circuit_tracer.transcoder import MLPNeuronConfig, SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 
 gemma_2_config_dict = {
@@ -253,7 +253,7 @@ def verify_feature_edges(
 def load_dummy_gemma_model(cfg: AutoConfig, mlp_neurons: bool = False) -> NNSightReplacementModel:
     if mlp_neurons:
         model = ReplacementModel.from_config(
-            cfg, MLPTranscoderConfig(activation_threshold=None), backend="nnsight"
+            cfg, MLPNeuronConfig(activation_topk=None, activation_threshold=None), backend="nnsight"
         )
         assert isinstance(model, NNSightReplacementModel)
         for _, param in model.named_parameters():
@@ -368,7 +368,9 @@ def test_gemma_2_2b():
 def test_gemma_2_2b_mlp_neurons():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained_and_transcoders(
-        "google/gemma-2-2b", MLPTranscoderConfig(activation_threshold=0.25), backend="nnsight"
+        "google/gemma-2-2b",
+        MLPNeuronConfig(activation_topk=None, activation_threshold=0.25),
+        backend="nnsight",
     )
     assert isinstance(model, NNSightReplacementModel)
     graph = attribute(s, model)

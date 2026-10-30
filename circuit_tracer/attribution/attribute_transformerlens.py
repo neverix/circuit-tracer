@@ -34,7 +34,7 @@ from circuit_tracer.attribution.targets import (
     log_attribution_target_info,
 )
 from circuit_tracer.graph import Graph, compute_partial_influences
-from circuit_tracer.transcoder import MLPDummyTranscoderSet
+from circuit_tracer.transcoder import MLPNeuronTranscoderSet
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
@@ -155,7 +155,7 @@ def _run_attribution(
     logger.info(f"Forward pass completed in {time.time() - phase_start:.2f}s")
 
     # MLP-neuron transcoders read the MLP weights, so the MLPs must stay loaded
-    if offload and not isinstance(model.transcoders, MLPDummyTranscoderSet):
+    if offload and not isinstance(model.transcoders, MLPNeuronTranscoderSet):
         offload_handles += offload_modules([block.mlp for block in model.blocks], offload)
 
     # Phase 2: build input vector list

@@ -14,7 +14,7 @@ from circuit_tracer.attribution.attribute_transformerlens import attribute
 from circuit_tracer.replacement_model.replacement_model_transformerlens import (
     TransformerLensReplacementModel,
 )
-from circuit_tracer.transcoder import MLPTranscoderConfig, SingleLayerTranscoder, TranscoderSet
+from circuit_tracer.transcoder import MLPNeuronConfig, SingleLayerTranscoder, TranscoderSet
 from circuit_tracer.transcoder.activation_functions import JumpReLU
 from circuit_tracer.utils import get_default_device
 
@@ -207,7 +207,9 @@ def load_dummy_gemma_model(
     cfg: HookedTransformerConfig, mlp_neurons: bool = False
 ) -> TransformerLensReplacementModel:
     if mlp_neurons:
-        model = ReplacementModel.from_config(cfg, MLPTranscoderConfig(activation_threshold=None))
+        model = ReplacementModel.from_config(
+            cfg, MLPNeuronConfig(activation_topk=None, activation_threshold=None)
+        )
         assert isinstance(model, TransformerLensReplacementModel)
         for _, param in model.named_parameters():
             nn.init.uniform_(param, a=-1, b=1)
@@ -438,7 +440,7 @@ def test_gemma_2_2b():
 def test_gemma_2_2b_mlp_neurons():
     s = "The National Digital Analytics Group (ND"
     model = ReplacementModel.from_pretrained_and_transcoders(
-        "google/gemma-2-2b", MLPTranscoderConfig(activation_threshold=0.25)
+        "google/gemma-2-2b", MLPNeuronConfig(activation_topk=None, activation_threshold=0.25)
     )
     assert isinstance(model, TransformerLensReplacementModel)
     graph = attribute(s, model)

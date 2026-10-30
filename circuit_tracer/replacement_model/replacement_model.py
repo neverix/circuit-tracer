@@ -5,7 +5,7 @@ Unified ReplacementModel interface that supports both nnsight and transformerlen
 from typing import Literal
 import torch
 
-from circuit_tracer.transcoder import MLPTranscoderConfig, TranscoderSet
+from circuit_tracer.transcoder import MLPNeuronConfig, TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
 from circuit_tracer.utils import get_default_device
 from circuit_tracer.utils.hf_utils import load_transcoder_from_hub
@@ -72,7 +72,7 @@ class ReplacementModel:
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig,
         backend: Backend = "transformerlens",
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
@@ -82,8 +82,8 @@ class ReplacementModel:
 
         Args:
             model_name (str): The name of the pretrained transformer model
-            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPTranscoderConfig]): The
-                transcoder set, cross-layer transcoder, or MLPTranscoderConfig to use the
+            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPNeuronConfig]): The
+                transcoder set, cross-layer transcoder, or MLPNeuronConfig to use the
                 model's MLP neurons
             backend (Backend): Which backend to use - "nnsight" or "transformerlens"
             device (Optional[torch.device]): Device to load the model on
@@ -126,7 +126,7 @@ class ReplacementModel:
     def from_config(
         cls,
         config,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig,
         backend: Backend = "transformerlens",
         **kwargs,
     ):
@@ -135,8 +135,8 @@ class ReplacementModel:
         Args:
             config: Model configuration (AutoConfig for nnsight, HookedTransformerConfig
                 for transformerlens)
-            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPTranscoderConfig]): The
-                transcoder set, cross-layer transcoder, or MLPTranscoderConfig to use the
+            transcoders (Union[TranscoderSet, CrossLayerTranscoder, MLPNeuronConfig]): The
+                transcoder set, cross-layer transcoder, or MLPNeuronConfig to use the
                 model's MLP neurons
             backend (Backend): Which backend to use - "nnsight" or "transformerlens"
             **kwargs: Additional arguments passed to the backend-specific implementation

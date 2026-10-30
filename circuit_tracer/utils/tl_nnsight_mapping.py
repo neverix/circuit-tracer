@@ -13,7 +13,7 @@ class TransformerLens_NNSight_Mapping:
     embed_location: str  # Location of the embedding Module (the location to which we will attribute for embeddings)
     embed_weight: str  # Location of the embedding weight matrix
     unembed_weight: str  # Location of the unembedding weight matrix
-    mlp: str  # Location of the MLP Module (read by MLPTranscoderConfig)
+    mlp: str  # Location of the MLP Module (read by MLPNeuronConfig)
     feature_hook_mapping: dict[
         str, tuple[str, Literal["input", "output"]]
     ]  # Mapping from (TransformerLens Hook) to a tuple representing an NNSight Envoy location, and whether we want its input or output

@@ -14,8 +14,8 @@ from nnsight import TransformersModel, Envoy, save, CONFIG as NNSIGHT_CONFIG
 from circuit_tracer.attribution.context_nnsight import AttributionContext
 from circuit_tracer.transcoder import TranscoderSet
 from circuit_tracer.transcoder.cross_layer_transcoder import CrossLayerTranscoder
-from circuit_tracer.transcoder.mlp_dummy_transcoder import (
-    MLPTranscoderConfig,
+from circuit_tracer.transcoder.mlp_neuron_transcoder import (
+    MLPNeuronConfig,
     MLPWeights,
     build_mlp_transcoder_set,
 )
@@ -69,7 +69,7 @@ class NNSightReplacementModel(TransformersModel):
     def from_config(
         cls,
         config: AutoConfig,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig,
         **kwargs,
     ) -> "NNSightReplacementModel":
         """Create a NNSightReplacementModel from a given AutoConfig and TranscoderSet
@@ -100,7 +100,7 @@ class NNSightReplacementModel(TransformersModel):
     def from_pretrained_and_transcoders(
         cls,
         model_name: str,
-        transcoders: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
+        transcoders: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig,
         device: torch.device | str = torch.device("cuda"),
         dtype: torch.dtype = torch.float32,
         **kwargs,
@@ -242,13 +242,13 @@ class NNSightReplacementModel(TransformersModel):
 
     def _configure_replacement_model(
         self,
-        transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPTranscoderConfig,
+        transcoder_set: TranscoderSet | CrossLayerTranscoder | MLPNeuronConfig,
     ):
         self.backend = "nnsight"
         self.eval()
         self.cfg = convert_nnsight_config_to_transformerlens(self.config)
 
-        if isinstance(transcoder_set, MLPTranscoderConfig):
+        if isinstance(transcoder_set, MLPNeuronConfig):
             transcoder_set = build_mlp_transcoder_set(self._mlp_weights(), transcoder_set)
         else:
             transcoder_set.to(self.device, self.dtype)

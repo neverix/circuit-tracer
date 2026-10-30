@@ -1,13 +1,13 @@
 """MLP neurons as transcoder features.
 
-MLPDummyTranscoder exposes one layer of a model's own MLP through the transcoder
+MLPNeuronTranscoder exposes one layer of a model's own MLP through the transcoder
 interface, so attribution graphs can use MLP neurons as nodes without a trained
 dictionary. The weights are the model's own tensors (not copies), and the
 reconstruction is exact: without thresholding, decode(encode(x)) is the MLP output.
 """
 
 from collections.abc import Callable, Sequence
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import torch
 import torch.nn.functional as F
@@ -17,28 +17,37 @@ from circuit_tracer.transcoder.activation_functions import GatedActivationFuncti
 from circuit_tracer.transcoder.single_layer_transcoder import TranscoderSet
 
 
-class MLPTranscoderConfig(NamedTuple):
+Encoders = Literal["up", "jacobian", "relp"]
+
+
+class MLPNeuronConfig(NamedTuple):
     """Use the model's MLP neurons as features instead of a trained transcoder.
 
     Pass in place of a TranscoderSet to ReplacementModel.from_pretrained_and_transcoders
     or ReplacementModel.from_config.
+
+    activation_topk and activation_threshold select the graph-node candidates among
+    the active neurons. Both are required; None disables either. Prefer
+    activation_topk: activation scales differ between models and between layers, so
+    one absolute threshold keeps a different fraction of the neurons in each.
     """
 
-    # Neurons with |activation| <= threshold are not graph-node candidates.
+    # Keep the top-k |activations| per position.
+    activation_topk: int | None
+    # Drop |activations| <= threshold (before activation_topk). Not recommended
+    # over activation_topk.
     activation_threshold: float | None
     scan_name: str | None = None
-    # RelP: frozen-derivative encoder vectors for gated MLPs.
-    # https://arxiv.org/abs/2508.21258
-    relp: bool = False
-    # Halve the encoder vectors of gated MLPs (corrects bilinear double-counting).
-    # None follows relp.
+    # The encoder vector of each active neuron of a gated MLP:
+    #   "up": the up-projection row;
+    #   "jacobian": the exact local Jacobian row of the activation;
+    #   "relp": the Jacobian row with the activation derivative frozen at the gate
+    #     value, also used in the activation's backward
+    #     (RelP, https://arxiv.org/abs/2508.21258).
+    encoders: Encoders = "up"
+    # Halve the Jacobian rows (corrects bilinear double-counting).
+    # None: on for "relp", off otherwise.
     half_rule: bool | None = None
-    # Keep only the top-k |activations| per position as graph-node candidates.
-    # Composes with activation_threshold (the threshold applies first).
-    activation_topk: int | None = None
-    # Use exact local-Jacobian encoder vectors for gated MLPs instead of the
-    # up-projection rows. relp implies the frozen-derivative form.
-    jacobian_encoders: bool = False
 
 
 class MLPWeights(NamedTuple):
@@ -53,7 +62,7 @@ class MLPWeights(NamedTuple):
     act_fn: Callable[[torch.Tensor], torch.Tensor]
 
 
-class MLPDummyTranscoder(nn.Module):
+class MLPNeuronTranscoder(nn.Module):
     """One layer's MLP neurons in the transcoder interface.
 
     Neuron s computes act(W_gate[s] x) * (W_up[s] x + b_up[s]) for a gated MLP and
@@ -77,7 +86,7 @@ class MLPDummyTranscoder(nn.Module):
         layer_idx: int,
         activation_threshold: float | None = None,
         activation_topk: int | None = None,
-        jacobian_encoders: bool = False,
+        encoders: Encoders = "up",
     ):
         super().__init__()
         self.W_enc = W_enc
@@ -90,7 +99,14 @@ class MLPDummyTranscoder(nn.Module):
         self.d_transcoder = W_enc.size(0)
         self.activation_threshold = activation_threshold
         self.activation_topk = activation_topk
-        self.jacobian_encoders = jacobian_encoders
+        if encoders != "up" and not (
+            isinstance(activation_function, GatedActivationFunction)
+            and activation_function.relp == (encoders == "relp")
+        ):
+            raise ValueError(
+                f'encoders="{encoders}" needs a GatedActivationFunction with relp={encoders == "relp"}'
+            )
+        self.encoders = encoders
 
     def _threshold_activations(self, acts: torch.Tensor) -> torch.Tensor:
         """Zero the activations that are not graph-node candidates.
@@ -122,7 +138,7 @@ class MLPDummyTranscoder(nn.Module):
         return reconstruction
 
     def compute_skip(self, input_acts):
-        raise ValueError("MLPDummyTranscoder has no skip connection")
+        raise ValueError("MLPNeuronTranscoder has no skip connection")
 
     def _get_decoder_vectors(self, feat_ids=None):
         return self.W_dec if feat_ids is None else self.W_dec[feat_ids]
@@ -130,10 +146,8 @@ class MLPDummyTranscoder(nn.Module):
     def encode_sparse(self, input_acts: torch.Tensor, zero_positions: slice = slice(0, 1)):
         """Sparse activations and the encoder vector of each active (position, neuron).
 
-        The encoder vector is the W_enc row by default. With jacobian_encoders it is
-        the exact local Jacobian row of a gated neuron, and with relp the RelP
-        frozen-derivative row (https://arxiv.org/abs/2508.21258); see
-        GatedActivationFunction.encoder_rows.
+        The encoder vector is the W_enc row with encoders="up", and otherwise a
+        Jacobian row; see MLPNeuronConfig and GatedActivationFunction.encoder_rows.
         """
         input_acts = input_acts.to(self.W_enc.dtype)
         acts = self.encode(input_acts)
@@ -141,11 +155,11 @@ class MLPDummyTranscoder(nn.Module):
         sparse_acts = acts.to_sparse()
         pos_idx, feat_idx = sparse_acts.indices()
 
-        act_fn = self.activation_function
-        if isinstance(act_fn, GatedActivationFunction) and (act_fn.relp or self.jacobian_encoders):
-            encoders = act_fn.encoder_rows(input_acts, pos_idx, feat_idx, self.W_enc, self.b_enc)
-        else:
+        if self.encoders == "up":
             encoders = self.W_enc[feat_idx]
+        else:
+            act_fn: GatedActivationFunction = self.activation_function  # type: ignore
+            encoders = act_fn.encoder_rows(input_acts, pos_idx, feat_idx, self.W_enc, self.b_enc)
         return sparse_acts, encoders
 
     def decode_sparse(self, sparse_acts: torch.Tensor, input_acts: torch.Tensor | None = None):
@@ -165,16 +179,16 @@ class MLPDummyTranscoder(nn.Module):
 
     def to_safetensors(self, save_path: str):
         raise NotImplementedError(
-            "MLPDummyTranscoder holds the model's own weights; save the model"
+            "MLPNeuronTranscoder holds the model's own weights; save the model"
         )
 
 
-class MLPDummyTranscoderSet(TranscoderSet):
-    """MLPDummyTranscoders for every layer, in the TranscoderSet interface."""
+class MLPNeuronTranscoderSet(TranscoderSet):
+    """MLPNeuronTranscoders for every layer, in the TranscoderSet interface."""
 
     def __init__(
         self,
-        transcoders: dict[int, MLPDummyTranscoder],
+        transcoders: dict[int, MLPNeuronTranscoder],
         feature_input_hook: str,
         feature_output_hook: str,
         scan_name: str | list[str] | None = None,
@@ -182,7 +196,7 @@ class MLPDummyTranscoderSet(TranscoderSet):
         super().__init__(transcoders, feature_input_hook, feature_output_hook, scan_name)  # type: ignore[arg-type]
 
     def apply_activation_function(self, layer_id, features):
-        transcoder: MLPDummyTranscoder = self.transcoders[layer_id]  # type: ignore
+        transcoder: MLPNeuronTranscoder = self.transcoders[layer_id]  # type: ignore
         return transcoder._threshold_activations(transcoder.activation_function(features))
 
 
@@ -191,9 +205,9 @@ def _detach(t: torch.Tensor | None) -> torch.Tensor | None:
 
 
 def build_mlp_transcoder_set(
-    mlps: Sequence[MLPWeights], config: MLPTranscoderConfig
-) -> MLPDummyTranscoderSet:
-    """Wrap each layer's MLP weights in an MLPDummyTranscoder.
+    mlps: Sequence[MLPWeights], config: MLPNeuronConfig
+) -> MLPNeuronTranscoderSet:
+    """Wrap each layer's MLP weights in an MLPNeuronTranscoder.
 
     The features read the MLP input (mlp.hook_in) and write the MLP output
     (mlp.hook_out). The weights are detached: they share storage with the model's
@@ -211,15 +225,15 @@ def build_mlp_transcoder_set(
         )
         if mlp.W_gate is not None:
             act_fn = GatedActivationFunction(
-                mlp.W_gate, mlp.act_fn, relp=config.relp, half_rule=config.half_rule
+                mlp.W_gate, mlp.act_fn, relp=config.encoders == "relp", half_rule=config.half_rule
             )
-        elif config.relp or config.jacobian_encoders:
+        elif config.encoders != "up":
             raise NotImplementedError(
-                "relp and jacobian_encoders are only implemented for gated MLPs"
+                f'encoders="{config.encoders}" is only implemented for gated MLPs'
             )
         else:
             act_fn = mlp.act_fn
-        transcoders[layer] = MLPDummyTranscoder(
+        transcoders[layer] = MLPNeuronTranscoder(
             mlp.W_up,
             mlp.b_up,
             mlp.W_down,
@@ -228,9 +242,9 @@ def build_mlp_transcoder_set(
             layer,
             activation_threshold=config.activation_threshold,
             activation_topk=config.activation_topk,
-            jacobian_encoders=config.jacobian_encoders,
+            encoders=config.encoders,
         )
-    return MLPDummyTranscoderSet(
+    return MLPNeuronTranscoderSet(
         transcoders,
         feature_input_hook="mlp.hook_in",
         feature_output_hook="mlp.hook_out",

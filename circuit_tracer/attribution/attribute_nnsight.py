@@ -34,7 +34,7 @@ from circuit_tracer.attribution.targets import (
     log_attribution_target_info,
 )
 from circuit_tracer.graph import Graph, compute_partial_influences
-from circuit_tracer.transcoder import MLPDummyTranscoderSet
+from circuit_tracer.transcoder import MLPNeuronTranscoderSet
 from circuit_tracer.replacement_model.replacement_model_nnsight import NNSightReplacementModel
 from circuit_tracer.utils.disk_offload import offload_modules
 
@@ -161,7 +161,7 @@ def _run_attribution(
 
     if offload:
         # MLP-neuron transcoders read the MLP weights, so the MLPs must stay loaded
-        if not isinstance(model.transcoders, MLPDummyTranscoderSet):
+        if not isinstance(model.transcoders, MLPNeuronTranscoderSet):
             offload_handles += offload_modules(
                 [layer.mlp for layer in getattr(model.pre_logit_location, "layers")], offload
             )

@@ -199,13 +199,16 @@ def load_transcoders(
             device=device,
         )
     elif model_kind == "mlp":
-        from circuit_tracer.transcoder.mlp_dummy_transcoder import MLPTranscoderConfig
+        from circuit_tracer.transcoder.mlp_neuron_transcoder import MLPNeuronConfig
 
-        # 0 disables either sparsifier
-        return MLPTranscoderConfig(
-            activation_threshold=config.get("activation_threshold", 0.25) or None,
-            scan_name=config.get("scan_name", config.get("scan")),
+        # No default: the config chooses the graph-node candidates. Prefer
+        # activation_topk (see MLPNeuronConfig); 0 or a missing key disables either.
+        if "activation_topk" not in config and "activation_threshold" not in config:
+            raise ValueError("MLP-neuron configs need activation_topk or activation_threshold")
+        return MLPNeuronConfig(
             activation_topk=config.get("activation_topk") or None,
+            activation_threshold=config.get("activation_threshold") or None,
+            scan_name=config.get("scan_name", config.get("scan")),
         )
     else:
         raise ValueError(f"Unknown model kind: {model_kind}")
