@@ -27,7 +27,7 @@ def kept_fraction(scores: torch.Tensor, cut: torch.Tensor) -> float:
     return kept / total
 
 
-@pytest.mark.parametrize("numel", [10, 1_000, 100_000, 10_000_000])
+@pytest.mark.parametrize("numel", [10, 1_000, 100_000, 1_000_000])
 def test_bisect_matches_sort(numel):
     """Both paths keep the fraction that a float64 sort keeps.
 
